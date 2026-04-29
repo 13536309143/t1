@@ -685,16 +685,16 @@ void LodClusters::onUIRender()
         PE::InputFloat("BiTangent Sign weight", &m_sceneConfigEdit.simplifyTangentSignWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
         ////////////////////////////////////
         //开启lod优化
-      //  PE::treePop();
-      // }
+       PE::treePop();
+      }
 
-      // if(PE::treeNode("Curvature-adaptive simplification"))
-      // {
-      //  PE::SliderFloat("Curvature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0, "Controls how much high-curvature regions are preserved during simplification. Higher values = more detail preservation.");
-      //  PE::SliderFloat("Curvature window radius", &m_sceneConfigEdit.curvatureWindowRadius, 0.1f, 5.0f, "%.2f", 0, "Radius for local curvature estimation. Larger values = smoother curvature estimation.");
-      //  PE::SliderFloat("Feature edge threshold", &m_sceneConfigEdit.featureEdgeThreshold, 0.1f, 2.0f, "%.2f", 0, "Edge length threshold for feature detection. Edges longer than this are protected.");
-      //  PE::SliderFloat("Perceptual weight", &m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f, "%.3f", 0, "Weight for perceptual error metric based on vertex count reduction.");
-      //  PE::SliderFloat("Silhouette preservation", &m_sceneConfigEdit.silhouettePreservation, 0.0f, 1.0f, "%.3f", 0, "Controls how much silhouette edges are preserved during simplification.");
+      if(PE::treeNode("Curvature-adaptive simplification"))
+      {
+       PE::SliderFloat("Curvature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0, "Controls how much high-curvature regions are preserved during simplification. Higher values = more detail preservation.");
+       PE::SliderFloat("Curvature window radius", &m_sceneConfigEdit.curvatureWindowRadius, 0.1f, 5.0f, "%.2f", 0, "Radius for local curvature estimation. Larger values = smoother curvature estimation.");
+       PE::SliderFloat("Feature edge threshold", &m_sceneConfigEdit.featureEdgeThreshold, 0.1f, 2.0f, "%.2f", 0, "Edge length threshold for feature detection. Edges longer than this are protected.");
+       PE::SliderFloat("Perceptual weight", &m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f, "%.3f", 0, "Weight for perceptual error metric based on vertex count reduction.");
+       PE::SliderFloat("Silhouette preservation", &m_sceneConfigEdit.silhouettePreservation, 0.0f, 1.0f, "%.3f", 0, "Controls how much silhouette edges are preserved during simplification.");
         //////////////////////////////////////
         m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
         m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);
