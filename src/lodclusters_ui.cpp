@@ -690,14 +690,21 @@ void LodClusters::onUIRender()
 
       // if(PE::treeNode("Curvature-adaptive simplification"))
       // {
-      //  PE::SliderFloat("Curvature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0, "Controls how much high-curvature regions are preserved during simplification. Higher values = more detail preservation.");
-      //  PE::SliderFloat("Curvature window radius", &m_sceneConfigEdit.curvatureWindowRadius, 0.1f, 5.0f, "%.2f", 0, "Radius for local curvature estimation. Larger values = smoother curvature estimation.");
-      //  PE::SliderFloat("Feature edge threshold", &m_sceneConfigEdit.featureEdgeThreshold, 0.1f, 2.0f, "%.2f", 0, "Edge length threshold for feature detection. Edges longer than this are protected.");
-      //  PE::SliderFloat("Perceptual weight", &m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f, "%.3f", 0, "Weight for perceptual error metric based on vertex count reduction.");
-      //  PE::SliderFloat("Silhouette preservation", &m_sceneConfigEdit.silhouettePreservation, 0.0f, 1.0f, "%.3f", 0, "Controls how much silhouette edges are preserved during simplification.");
+        PE::SliderFloat("Curvature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0,
+                        "Biases simplification away from high-curvature regions so visually strong bends keep more detail.");
+        PE::InputFloat("Curvature window radius", &m_sceneConfigEdit.curvatureWindowRadius, 0.05f, 0.1f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Neighborhood radius used when estimating curvature. Larger values smooth the response across broader features.");
+        PE::InputFloat("Feature edge threshold", &m_sceneConfigEdit.featureEdgeThreshold, 0.05f, 0.1f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Relative edge threshold used to detect strong local features. Lower values protect more edges.");
+        PE::SliderFloat("Perceptual weight", &m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f, "%.3f", 0,
+                        "Adds a perceptual penalty so visually dense regions simplify more conservatively.");
         //////////////////////////////////////
         m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
         m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);
+        m_sceneConfigEdit.curvatureWindowRadius = std::max(0.01f, m_sceneConfigEdit.curvatureWindowRadius);
+        m_sceneConfigEdit.featureEdgeThreshold = std::max(0.0f, m_sceneConfigEdit.featureEdgeThreshold);
+        m_sceneConfigEdit.curvatureAdaptiveStrength = std::clamp(m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f);
+        m_sceneConfigEdit.perceptualWeight = std::clamp(m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f);
         PE::treePop();
       }
 

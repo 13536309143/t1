@@ -59,11 +59,11 @@ struct SceneConfig
   ////////////////////////////////////////////////
   // 开启lod优化
   // curvature-adaptive simplification parameters
-  // float curvatureAdaptiveStrength = 0.3f;
-  // float curvatureWindowRadius = 0.5f;
-  // float featureEdgeThreshold = 0.5f;
-  // float perceptualWeight = 0.15f;
-  // float silhouettePreservation = 0.2f;
+  float curvatureAdaptiveStrength = 0.3f;
+  float curvatureWindowRadius     = 0.5f;
+  float featureEdgeThreshold      = 0.5f;
+  float perceptualWeight          = 0.15f;
+  float silhouettePreservation    = 0.2f;
   ////////////////////////////////////////////////////
 
   // used when compression is enabled
@@ -77,9 +77,7 @@ struct SceneConfig
   // safe to add new variables into this section as long as they are zeroed by default
   ////////////////////////////////////////////////
   // 开启lod优化
-  // uint32_t reservedData[9] = {};
-  //////////////////////////////////////////////////
-  uint32_t reservedData[14] = {};
+  uint32_t reservedData[9] = {};
 };
 
 // Control the loading and processing procedure of the scene.

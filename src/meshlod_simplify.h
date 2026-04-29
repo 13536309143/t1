@@ -4,6 +4,30 @@
 namespace clod
 {
 
+float computeAverageEdgeLength(const clodMesh& mesh, const std::vector<unsigned int>& indices)
+{
+	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
+	double edge_sum = 0.0;
+	size_t edge_count = 0;
+
+	for (size_t i = 0; i + 2 < indices.size(); i += 3)
+	{
+		unsigned int tri[3] = {indices[i], indices[i + 1], indices[i + 2]};
+		for (int e = 0; e < 3; ++e)
+		{
+			const float* a = &mesh.vertex_positions[tri[e] * positions_stride];
+			const float* b = &mesh.vertex_positions[tri[(e + 1) % 3] * positions_stride];
+			const float dx = a[0] - b[0];
+			const float dy = a[1] - b[1];
+			const float dz = a[2] - b[2];
+			edge_sum += sqrt(double(dx * dx + dy * dy + dz * dz));
+			edge_count++;
+		}
+	}
+
+	return edge_count ? float(edge_sum / double(edge_count)) : 0.0f;
+}
+
 float computeVertexCurvature(const float* positions, size_t stride, const unsigned int* indices, size_t index_count, unsigned int vertex, float radius)
 {
 	float pos[3] = {positions[vertex * stride + 0], positions[vertex * stride + 1], positions[vertex * stride + 2]};
@@ -68,14 +92,24 @@ float computeVertexCurvature(const float* positions, size_t stride, const unsign
 	return variance / float(count > 0 ? count : 1);
 }
 
-void computeFeatureWeights(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, std::vector<float>& feature_weights, std::vector<unsigned char>& enhanced_locks)
+void computeFeatureWeights(const clodConfig& config,
+                           const clodMesh& mesh,
+                           const std::vector<unsigned int>& indices,
+                           std::vector<float>& feature_weights,
+                           std::vector<float>& curvature_values,
+                           std::vector<unsigned char>& enhanced_locks)
 {
 	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
 	float radius = config.curvature_window_radius > 0 ? config.curvature_window_radius : 1.0f;
-	float edge_thresh = config.feature_edge_threshold > 0 ? config.feature_edge_threshold : 0.5f;
+	float average_edge_length = computeAverageEdgeLength(mesh, indices);
+	float edge_thresh = std::max(average_edge_length * std::max(config.feature_edge_threshold, 0.05f), 1e-5f);
+	float edge_bias = std::max(0.25f, 0.5f + config.curvature_adaptive_strength);
 
 	for (size_t i = 0; i < mesh.vertex_count; ++i)
+	{
 		feature_weights[i] = 1.0f;
+		curvature_values[i] = 0.0f;
+	}
 
 	for (size_t i = 0; i < indices.size(); i += 3)
 	{
@@ -84,33 +118,53 @@ void computeFeatureWeights(const clodConfig& config, const clodMesh& mesh, const
 		float pb[3] = {mesh.vertex_positions[b * positions_stride + 0], mesh.vertex_positions[b * positions_stride + 1], mesh.vertex_positions[b * positions_stride + 2]};
 		float pc[3] = {mesh.vertex_positions[c * positions_stride + 0], mesh.vertex_positions[c * positions_stride + 1], mesh.vertex_positions[c * positions_stride + 2]};
 
-		float eab = (pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) + (pa[2] - pb[2]) * (pa[2] - pb[2]);
-		float eac = (pa[0] - pc[0]) * (pa[0] - pc[0]) + (pa[1] - pc[1]) * (pa[1] - pc[1]) + (pa[2] - pc[2]) * (pa[2] - pc[2]);
-		float ebc = (pb[0] - pc[0]) * (pb[0] - pc[0]) + (pb[1] - pc[1]) * (pb[1] - pc[1]) + (pb[2] - pc[2]) * (pb[2] - pc[2]);
+		float eab = sqrtf((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) + (pa[2] - pb[2]) * (pa[2] - pb[2]));
+		float eac = sqrtf((pa[0] - pc[0]) * (pa[0] - pc[0]) + (pa[1] - pc[1]) * (pa[1] - pc[1]) + (pa[2] - pc[2]) * (pa[2] - pc[2]));
+		float ebc = sqrtf((pb[0] - pc[0]) * (pb[0] - pc[0]) + (pb[1] - pc[1]) * (pb[1] - pc[1]) + (pb[2] - pc[2]) * (pb[2] - pc[2]));
 
-		if (eab > edge_thresh * edge_thresh)
+		if (eab > edge_thresh)
 		{
-			feature_weights[a] += config.curvature_adaptive_strength;
-			feature_weights[b] += config.curvature_adaptive_strength;
+			float edge_importance = std::min((eab / edge_thresh) - 1.0f, 4.0f);
+			feature_weights[a] += edge_importance * edge_bias;
+			feature_weights[b] += edge_importance * edge_bias;
 		}
-		if (eac > edge_thresh * edge_thresh)
+		if (eac > edge_thresh)
 		{
-			feature_weights[a] += config.curvature_adaptive_strength;
-			feature_weights[c] += config.curvature_adaptive_strength;
+			float edge_importance = std::min((eac / edge_thresh) - 1.0f, 4.0f);
+			feature_weights[a] += edge_importance * edge_bias;
+			feature_weights[c] += edge_importance * edge_bias;
 		}
-		if (ebc > edge_thresh * edge_thresh)
+		if (ebc > edge_thresh)
 		{
-			feature_weights[b] += config.curvature_adaptive_strength;
-			feature_weights[c] += config.curvature_adaptive_strength;
+			float edge_importance = std::min((ebc / edge_thresh) - 1.0f, 4.0f);
+			feature_weights[b] += edge_importance * edge_bias;
+			feature_weights[c] += edge_importance * edge_bias;
 		}
 	}
 
+	float max_curvature = 0.0f;
 	for (size_t i = 0; i < mesh.vertex_count; ++i)
 	{
 		float curvature = computeVertexCurvature(mesh.vertex_positions, positions_stride, indices.data(), indices.size(), (unsigned int)i, radius);
-		if (curvature > edge_thresh)
+		curvature_values[i] = curvature;
+		max_curvature = std::max(max_curvature, curvature);
+	}
+
+	float max_feature_weight = 1.0f;
+	for (size_t i = 0; i < mesh.vertex_count; ++i)
+	{
+		float normalized_curvature = max_curvature > 1e-8f ? curvature_values[i] / max_curvature : 0.0f;
+		feature_weights[i] += normalized_curvature * (1.0f + config.curvature_adaptive_strength * 2.0f);
+		max_feature_weight = std::max(max_feature_weight, feature_weights[i]);
+	}
+
+	float feature_span = std::max(max_feature_weight - 1.0f, 0.0f);
+	float protect_threshold = std::max(0.2f, 0.7f - config.curvature_adaptive_strength * 0.4f);
+	for (size_t i = 0; i < mesh.vertex_count; ++i)
+	{
+		float normalized_feature = feature_span > 1e-6f ? (feature_weights[i] - 1.0f) / feature_span : 0.0f;
+		if (normalized_feature >= protect_threshold)
 		{
-			feature_weights[i] += curvature * config.curvature_adaptive_strength;
 			enhanced_locks[i] |= meshopt_SimplifyVertex_Protect;
 		}
 	}
@@ -118,7 +172,9 @@ void computeFeatureWeights(const clodConfig& config, const clodMesh& mesh, const
 
 float perceptualError(float geometric_error, float vertex_count, float original_count)
 {
-	return geometric_error * powf(vertex_count / (original_count > 0 ? original_count : 1), 0.3f);
+	float reduced_vertices = std::max(vertex_count, 1.0f);
+	float source_vertices = std::max(original_count, 1.0f);
+	return geometric_error * powf(source_vertices / reduced_vertices, 0.3f);
 }
 
 void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error)
@@ -155,40 +211,73 @@ std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mes
 	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
 
 	std::vector<float> feature_weights(mesh.vertex_count, 1.0f);
+	std::vector<float> curvature_values(mesh.vertex_count, 0.0f);
 	std::vector<unsigned char> enhanced_locks(locks);
 	if (config.curvature_adaptive_strength > 0 || config.feature_edge_threshold > 0)
 	{
-		computeFeatureWeights(config, mesh, indices, feature_weights, enhanced_locks);
+		computeFeatureWeights(config, mesh, indices, feature_weights, curvature_values, enhanced_locks);
 	}
 
 	float adaptive_ratio = config.simplify_ratio;
-	if (config.curvature_adaptive_strength > 0)
+	if (config.curvature_adaptive_strength > 0 || config.feature_edge_threshold > 0 || config.perceptual_weight > 0)
 	{
-		float avg_curvature = 0.f;
-		float max_curvature = 0.f;
-		float sample_count = 0.f;
-		size_t step = std::max(size_t(1), indices.size() / (3 * 64));
-		for (size_t i = 0; i < indices.size(); i += 3 * step)
+		std::vector<char> vertex_used(mesh.vertex_count, 0);
+		for (size_t i = 0; i < indices.size(); ++i)
 		{
-			for (int j = 0; j < 3; ++j)
-			{
-				unsigned int v = indices[i + j];
-				float curvature = computeVertexCurvature(mesh.vertex_positions, positions_stride, indices.data(), indices.size(), v, config.curvature_window_radius > 0 ? config.curvature_window_radius : 1.0f);
-				avg_curvature += curvature;
-				max_curvature = std::max(max_curvature, curvature);
-				sample_count += 1.f;
-			}
+			vertex_used[indices[i]] = 1;
 		}
-		if (sample_count > 0)
+
+		float avg_feature_importance = 0.0f;
+		float max_feature_importance = 0.0f;
+		float avg_normalized_curvature = 0.0f;
+		float max_curvature = 0.0f;
+		float used_count = 0.0f;
+
+		for (size_t i = 0; i < mesh.vertex_count; ++i)
 		{
-			avg_curvature /= sample_count;
-			float curvature_factor = max_curvature > 1e-6f ? (1.0f - config.curvature_adaptive_strength * (avg_curvature / max_curvature)) : 1.0f;
-			adaptive_ratio = std::max(0.1f, config.simplify_ratio * curvature_factor);
+			if (!vertex_used[i])
+			{
+				continue;
+			}
+
+			float feature_importance = std::max(feature_weights[i] - 1.0f, 0.0f);
+			avg_feature_importance += feature_importance;
+			max_feature_importance = std::max(max_feature_importance, feature_importance);
+			max_curvature = std::max(max_curvature, curvature_values[i]);
+			used_count += 1.0f;
+		}
+
+		if (used_count > 0.0f)
+		{
+			avg_feature_importance /= used_count;
+			for (size_t i = 0; i < mesh.vertex_count; ++i)
+			{
+				if (!vertex_used[i])
+				{
+					continue;
+				}
+
+				float normalized_curvature = max_curvature > 1e-8f ? curvature_values[i] / max_curvature : 0.0f;
+				avg_normalized_curvature += normalized_curvature;
+			}
+			avg_normalized_curvature /= used_count;
+
+			float feature_boost = std::min(0.35f, avg_feature_importance * (0.08f + config.curvature_adaptive_strength * 0.20f));
+			float curvature_boost = avg_normalized_curvature * config.curvature_adaptive_strength * 0.25f;
+			float perceptual_boost = (1.0f - config.simplify_ratio) * config.perceptual_weight * 0.35f;
+
+			if (max_feature_importance > 0.0f)
+			{
+				feature_boost += std::min(0.15f, max_feature_importance * 0.03f);
+			}
+
+			adaptive_ratio = std::min(0.98f, config.simplify_ratio + feature_boost + curvature_boost + perceptual_boost);
 		}
 	}
 
 	size_t adaptive_target = size_t((indices.size() / 3) * adaptive_ratio) * 3;
-	adaptive_target = std::min(adaptive_target, target_count);
+	adaptive_target = std::max(adaptive_target, target_count);
+	adaptive_target = std::min(adaptive_target, indices.size());
 
 	std::vector<unsigned int> lod(indices.size());
 	unsigned int options = meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute | (config.simplify_permissive ? meshopt_SimplifyPermissive : 0) | (config.simplify_regularize ? meshopt_SimplifyRegularize : 0);
