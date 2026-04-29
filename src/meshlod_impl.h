@@ -50,13 +50,7 @@ std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, 
 std::vector<std::vector<int> > partition(const clodConfig& config, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& pending, const std::vector<unsigned int>& remap);
 void lockBoundary(std::vector<unsigned char>& locks, const std::vector<std::vector<int> >& groups, const std::vector<Cluster>& clusters, const std::vector<unsigned int>& remap, const unsigned char* vertex_lock);
 float computeVertexCurvature(const float* positions, size_t stride, const unsigned int* indices, size_t index_count, unsigned int vertex, float radius);
-float computeAverageEdgeLength(const clodMesh& mesh, const std::vector<unsigned int>& indices);
-void computeFeatureWeights(const clodConfig& config,
-                           const clodMesh& mesh,
-                           const std::vector<unsigned int>& indices,
-                           std::vector<float>& feature_weights,
-                           std::vector<float>& curvature_values,
-                           std::vector<unsigned char>& enhanced_locks);
+void computeFeatureWeights(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, std::vector<float>& feature_weights, std::vector<unsigned char>& enhanced_locks);
 float perceptualError(float geometric_error, float vertex_count, float original_count);
 void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error);
 std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error);

@@ -439,11 +439,11 @@ namespace lodclusters {
      clodInfo.simplify_error_edge_limit = m_config.lodErrorEdgeLimit;
      ///////////////////////////////////////
 	   //开启lod优化
-     clodInfo.curvature_adaptive_strength = m_config.curvatureAdaptiveStrength;
-     clodInfo.curvature_window_radius     = m_config.curvatureWindowRadius;
-     clodInfo.feature_edge_threshold      = m_config.featureEdgeThreshold;
-     clodInfo.perceptual_weight           = m_config.perceptualWeight;
-     clodInfo.silhouette_preservation     = m_config.silhouettePreservation;
+    //  clodInfo.curvature_adaptive_strength = m_config.curvatureAdaptiveStrength;
+    //  clodInfo.curvature_window_radius = m_config.curvatureWindowRadius;
+    //  clodInfo.feature_edge_threshold = m_config.featureEdgeThreshold;
+    //  clodInfo.perceptual_weight = m_config.perceptualWeight;
+    //  clodInfo.silhouette_preservation = m_config.silhouettePreservation;
      ///////////////////////////////////////
      // 封装输入的几何网格指针
      clodMesh inputMesh                = {};
