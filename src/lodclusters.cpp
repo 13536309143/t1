@@ -235,6 +235,8 @@ void LodClusters::deinitScene()
 {
   deinitRenderScene();
   clearSelectedInstance();
+  m_originalInstanceMatrices.clear();
+  m_modelTreeInstancesByGeometry.clear();
 
   if(m_scene)
   {
@@ -756,6 +758,7 @@ void LodClusters::setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig c
 void LodClusters::updatedSceneGrid()
 {
   captureOriginalInstanceTransforms();
+  rebuildModelTreeCache();
   clearSelectedInstance();
 
   {
@@ -1234,6 +1237,25 @@ void LodClusters::captureOriginalInstanceTransforms()
   }
 }
 
+void LodClusters::rebuildModelTreeCache()
+{
+  m_modelTreeInstancesByGeometry.clear();
+  if(!m_scene)
+  {
+    return;
+  }
+
+  m_modelTreeInstancesByGeometry.resize(m_scene->getActiveGeometryCount());
+  for(uint32_t instanceId = 0; instanceId < uint32_t(m_scene->m_instances.size()); instanceId++)
+  {
+    const uint32_t geometryId = m_scene->m_instances[instanceId].geometryID;
+    if(geometryId < m_modelTreeInstancesByGeometry.size())
+    {
+      m_modelTreeInstancesByGeometry[geometryId].push_back(instanceId);
+    }
+  }
+}
+
 void LodClusters::applyInstanceTransform(uint32_t instanceId, const glm::mat4& matrix)
 {
   if(!m_scene || instanceId >= m_scene->m_instances.size())
@@ -1318,9 +1340,9 @@ void LodClusters::updateInteractiveInstanceControls()
     direction -= up;
   if(ImGui::IsKeyDown(ImGuiKey_Keypad8))
     direction += up;
-  if(ImGui::IsKeyDown(ImGuiKey_Q))
+  if(ImGui::IsKeyDown(ImGuiKey_Keypad7))
     direction -= fwd;
-  if(ImGui::IsKeyDown(ImGuiKey_E))
+  if(ImGui::IsKeyDown(ImGuiKey_Keypad9))
     direction += fwd;
 
   if(glm::length(direction) <= 0.0f)

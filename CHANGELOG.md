@@ -26,6 +26,37 @@
 - 验证结果
 ```
 
+## 2026-05-06
+
+### 场景零件选择、模型树、高亮与键盘平移交互
+
+类型：功能 | 性能 | 缺陷修复
+
+涉及文件：
+- `src/resources.hpp`
+- `src/lodclusters.hpp`
+- `src/lodclusters.cpp`
+- `src/lodclusters_ui.cpp`
+- `src/renderer.hpp`
+- `src/renderer.cpp`
+- `src/renderer_clusters_lod.cpp`
+- `shaders/render_instance_bbox.mesh.glsl`
+- `shaders/render_instance_bbox.frag.glsl`
+
+变更内容：
+- 接回鼠标拾取流程，支持在 viewport 中点击场景内单个 `Instance`，并在 UI 中显示对应 instance、geometry、三角形数、顶点数、最高细节 cluster 数与总 LOD cluster 数。
+- 在 `Statistics` 面板新增 `Model Tree`，按 geometry 分组列出场景 instance，点击树中条目可选中并同步黄色高亮边框。
+- 为选中模型新增黄色 bbox 高亮；未开启全局 `Instance BBoxes` 时只绘制选中 instance 的边框。
+- 新增 `Interactive Mode`，支持使用小键盘 `8/4/2/6` 沿相机上/左/下/右方向平移选中零件，并提供 `Move Speed`、`Reset Selected`、`Reset All` 控制。
+- 增加 CPU 侧 instance transform 脏标记与 GPU `RenderInstance` 局部同步路径，避免移动单个零件时重建 renderer 或重传全部实例。
+- 修复选中高亮导致帧率大幅下降的问题：selected-only 高亮路径现在只 dispatch 一个 bbox，不再遍历所有 instance 后通过 fragment discard 过滤。
+- 交互模式下强制捕获键盘输入，避免方向键被相机控制器同时消费；随后将移动键位改为小键盘，进一步规避相机快捷键冲突。
+
+验证：
+- `cmake --build build --config Release`
+- `_bin\Release\t1.exe --headless --headlessframes 1 --scene _downloaded_resources\bunny_v2\bunny.gltf`
+- 构建通过，headless 场景启动与 shader 编译通过。
+
 ## 2026-04-29
 ### 混合软硬光栅、自适应分流与目标占比反馈控制器
 

@@ -101,8 +101,9 @@ void main()
     uint corner = vert % MESHSHADER_BBOX_VERTICES;
     
     uint boxLoad = min(box,numBoxes-1);
+    uint instanceID = push.selectedOnly != 0 ? push.selectedInstanceID : boxLoad + baseID;
     
-    RenderInstance instance = instances[boxLoad + baseID];
+    RenderInstance instance = instances[instanceID];
     BBox bbox = geometries[instance.geometryID].bbox;
     
     bvec3 weight   = bvec3((corner & 1) != 0, (corner & 2) != 0, (corner & 4) != 0);
@@ -116,7 +117,7 @@ void main()
       gl_MeshVerticesNV[vert].gl_Position = 
     #endif
         view.viewProjMatrix * vec4(instance.worldMatrix * vec4(cornerPos,1), 1);
-      OUT[vert].instanceID = baseID + box;
+      OUT[vert].instanceID = instanceID;
     }
   }
   {

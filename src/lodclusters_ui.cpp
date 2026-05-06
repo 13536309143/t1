@@ -1034,34 +1034,31 @@ void LodClusters::onUIRender()
         resetAllInstanceTransforms();
       }
 
-      std::vector<std::vector<uint32_t>> instancesByGeometry(m_scene->getActiveGeometryCount());
-      for(uint32_t instanceId = 0; instanceId < uint32_t(m_scene->m_instances.size()); instanceId++)
-      {
-        const uint32_t geometryId = m_scene->m_instances[instanceId].geometryID;
-        if(geometryId < instancesByGeometry.size())
-        {
-          instancesByGeometry[geometryId].push_back(instanceId);
-        }
-      }
-
       ImGui::BeginChild("##ModelTree", ImVec2(0, 280 * ImGui::GetWindowDpiScale()), true);
-      for(uint32_t geometryId = 0; geometryId < uint32_t(instancesByGeometry.size()); geometryId++)
+      for(uint32_t geometryId = 0; geometryId < uint32_t(m_modelTreeInstancesByGeometry.size()); geometryId++)
       {
         const Scene::GeometryView& geometry = m_scene->getActiveGeometry(geometryId);
+        const std::vector<uint32_t>& instances = m_modelTreeInstancesByGeometry[geometryId];
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth;
         bool geometryOpen = ImGui::TreeNodeEx((void*)(uintptr_t(geometryId) + 1), flags, "Geometry %u  (%zu instances, %u clusters)",
-                                              geometryId, instancesByGeometry[geometryId].size(), geometry.hiClustersCount);
+                                              geometryId, instances.size(), geometry.hiClustersCount);
         if(geometryOpen)
         {
-          for(uint32_t instanceId : instancesByGeometry[geometryId])
+          ImGuiListClipper clipper;
+          clipper.Begin(int(instances.size()));
+          while(clipper.Step())
           {
-            bool selected = m_pickedInfo.valid && m_pickedInfo.instanceId == instanceId;
-            ImGui::PushID(int(instanceId));
-            if(ImGui::Selectable(fmt::format("Instance {}  |  {} tris", instanceId, geometry.hiTriangleCount).c_str(), selected))
+            for(int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
             {
-              selectInstance(instanceId);
+              uint32_t instanceId = instances[row];
+              bool selected = m_pickedInfo.valid && m_pickedInfo.instanceId == instanceId;
+              ImGui::PushID(int(instanceId));
+              if(ImGui::Selectable(fmt::format("Instance {}  |  {} tris", instanceId, geometry.hiTriangleCount).c_str(), selected))
+              {
+                selectInstance(instanceId);
+              }
+              ImGui::PopID();
             }
-            ImGui::PopID();
           }
           ImGui::TreePop();
         }

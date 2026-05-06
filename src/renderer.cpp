@@ -290,6 +290,11 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
 }
 void Renderer::renderInstanceBboxes(VkCommandBuffer cmd, uint32_t selectedInstanceID, bool selectedOnly)
 {
+  if(selectedOnly && selectedInstanceID >= m_renderInstances.size())
+  {
+    return;
+  }
+
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderInstanceBboxes);
   struct PushData
@@ -298,7 +303,7 @@ void Renderer::renderInstanceBboxes(VkCommandBuffer cmd, uint32_t selectedInstan
     uint32_t selectedInstanceID;
     uint32_t selectedOnly;
     uint32_t _pad;
-  } push = {uint32_t(m_renderInstances.size()), selectedInstanceID, selectedOnly ? 1u : 0u, 0u};
+  } push = {selectedOnly ? 1u : uint32_t(m_renderInstances.size()), selectedInstanceID, selectedOnly ? 1u : 0u, 0u};
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(push), &push);
   uint32_t numRenderInstances = push.numRenderInstances;
   uint32_t workGroupCount = (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes;

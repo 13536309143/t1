@@ -296,6 +296,7 @@ private:
   } m_pickedInfo;
   bool m_pendingPickSelection = false;
   std::vector<glm::mat4> m_originalInstanceMatrices;
+  std::vector<std::vector<uint32_t>> m_modelTreeInstancesByGeometry;
 
   // use by-value copies for flexibility
   void initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange);
@@ -324,6 +325,7 @@ private:
   void selectInstance(uint32_t instanceId);
   void clearSelectedInstance();
   void captureOriginalInstanceTransforms();
+  void rebuildModelTreeCache();
   void applyInstanceTransform(uint32_t instanceId, const glm::mat4& matrix);
   void resetSelectedInstanceTransform();
   void resetAllInstanceTransforms();

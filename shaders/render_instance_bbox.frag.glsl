@@ -32,11 +32,6 @@ layout(location=0) in Interpolants
 layout(location=0,index=0) out vec4 out_Color;
 void main()
 {
-  if(push.selectedOnly != 0 && IN.instanceID != push.selectedInstanceID)
-  {
-    discard;
-  }
-
   out_Color = IN.instanceID == push.selectedInstanceID ?
               vec4(1.0, 0.86, 0.05, 1.0) :
               unpackUnorm4x8(murmurHash(IN.instanceID)) * 0.9 + 0.1;
