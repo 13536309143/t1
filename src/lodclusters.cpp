@@ -1318,6 +1318,10 @@ void LodClusters::updateInteractiveInstanceControls()
     direction -= up;
   if(ImGui::IsKeyDown(ImGuiKey_Keypad8))
     direction += up;
+  if(ImGui::IsKeyDown(ImGuiKey_Q))
+    direction -= fwd;
+  if(ImGui::IsKeyDown(ImGuiKey_E))
+    direction += fwd;
 
   if(glm::length(direction) <= 0.0f)
   {
