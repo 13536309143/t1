@@ -309,6 +309,7 @@ void LodClusters::onUIRender()
 
   bool pickingValid = isPickingValid(readback);
   // camera control, recenter
+  updateInteractiveInstanceControls();
 
   ImVec4 text_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
   ImVec4 warn_color = text_color;
@@ -998,12 +999,27 @@ void LodClusters::onUIRender()
     }
     if(m_scene && ImGui::CollapsingHeader("Model Tree", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
+      if(ImGui::Checkbox("Interactive Mode", &m_tweak.interactiveMode) && m_tweak.interactiveMode && m_rendererConfig.useTwoPassCulling)
+      {
+        m_rendererConfig.useTwoPassCulling = false;
+      }
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(110 * ImGui::GetWindowDpiScale());
+      ImGui::InputFloat("Move Speed", &m_tweak.interactiveMoveSpeed, 0.05f, 0.25f, "%.3f");
+      m_tweak.interactiveMoveSpeed = std::max(0.0f, m_tweak.interactiveMoveSpeed);
+      ImGui::TextDisabled("Move selected: keypad 8/4/2/6");
+
       if(m_pickedInfo.valid)
       {
         ImGui::Text("Selected: Instance %u / Geometry %u", m_pickedInfo.instanceId, m_pickedInfo.geometryId);
         ImGui::Text("Clusters: %u high, %u total LOD", m_pickedInfo.hiClusterCount, m_pickedInfo.totalClusterCount);
         ImGui::Text("Triangles: %u", m_pickedInfo.triangleCount);
         ImGui::Text("Vertices: %u", m_pickedInfo.vertexCount);
+        if(ImGui::Button("Reset Selected"))
+        {
+          resetSelectedInstanceTransform();
+        }
+        ImGui::SameLine();
         if(ImGui::Button("Clear Selection"))
         {
           clearSelectedInstance();
@@ -1012,6 +1028,10 @@ void LodClusters::onUIRender()
       else
       {
         ImGui::TextDisabled("No model selected");
+      }
+      if(ImGui::Button("Reset All"))
+      {
+        resetAllInstanceTransforms();
       }
 
       std::vector<std::vector<uint32_t>> instancesByGeometry(m_scene->getActiveGeometryCount());

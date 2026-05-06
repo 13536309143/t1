@@ -1,5 +1,6 @@
 //基类和通用接口
 #include <random>
+#include <algorithm>
 #include <vector>
 #include <volk.h>
 #include <fmt/format.h>
@@ -134,7 +135,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
   }
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
   NVVK_DBG_NAME(m_renderInstanceBuffer.buffer);
   res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
   if(config.useSorting)
@@ -155,6 +156,70 @@ void Renderer::deinitBasics(Resources& res)
   m_basicDset.deinit();
   res.m_allocator.destroyBuffer(m_renderInstanceBuffer);
   res.m_allocator.destroyBuffer(m_sortingAuxBuffer);
+  m_dirtyRenderInstances.clear();
+}
+
+bool Renderer::setInstanceTransform(uint32_t instanceId, const glm::mat4& matrix, bool twoSided)
+{
+  if(instanceId >= m_renderInstances.size())
+  {
+    return false;
+  }
+
+  shaderio::RenderInstance& renderInstance = m_renderInstances[instanceId];
+  renderInstance.worldMatrix               = glm::mat4x3(matrix);
+  renderInstance.worldMatrixI              = glm::mat4x3(glm::inverse(matrix));
+  renderInstance.twoSided                  = twoSided ? 1 : 0;
+  renderInstance.flipWinding =
+      (!twoSided && ((glm::determinant(matrix) <= 0) != m_config.flipWinding)) ? 1 : 0;
+
+  if(std::find(m_dirtyRenderInstances.begin(), m_dirtyRenderInstances.end(), instanceId) == m_dirtyRenderInstances.end())
+  {
+    m_dirtyRenderInstances.push_back(instanceId);
+  }
+  return true;
+}
+
+void Renderer::setInstanceTransforms(const Scene& scene)
+{
+  const uint32_t count = std::min(uint32_t(scene.m_instances.size()), uint32_t(m_renderInstances.size()));
+  for(uint32_t instanceId = 0; instanceId < count; instanceId++)
+  {
+    const Scene::Instance& instance = scene.m_instances[instanceId];
+    setInstanceTransform(instanceId, instance.matrix, instance.twoSided);
+  }
+}
+
+void Renderer::syncDirtyRenderInstances(VkCommandBuffer cmd)
+{
+  if(m_dirtyRenderInstances.empty() || !m_renderInstanceBuffer.buffer)
+  {
+    return;
+  }
+
+  std::sort(m_dirtyRenderInstances.begin(), m_dirtyRenderInstances.end());
+  m_dirtyRenderInstances.erase(std::unique(m_dirtyRenderInstances.begin(), m_dirtyRenderInstances.end()),
+                               m_dirtyRenderInstances.end());
+
+  for(uint32_t instanceId : m_dirtyRenderInstances)
+  {
+    if(instanceId >= m_renderInstances.size())
+    {
+      continue;
+    }
+
+    vkCmdUpdateBuffer(cmd, m_renderInstanceBuffer.buffer,
+                      sizeof(shaderio::RenderInstance) * VkDeviceSize(instanceId),
+                      sizeof(shaderio::RenderInstance), &m_renderInstances[instanceId]);
+  }
+
+  VkMemoryBarrier barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask   = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr,
+                       0, nullptr);
+
+  m_dirtyRenderInstances.clear();
 }
 
 void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const nvvk::Buffer* sceneBuildBuffer)
