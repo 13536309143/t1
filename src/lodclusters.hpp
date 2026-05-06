@@ -281,6 +281,19 @@ private:
   //   uint32_t  triangleCount = 0;
   //   uint32_t  clusterCount = 0;
   // } m_pickedInfo;
+  static constexpr uint32_t INVALID_INSTANCE_ID = ~0u;
+  struct PickedInfo
+  {
+    bool     valid = false;
+    uint32_t instanceId = INVALID_INSTANCE_ID;
+    uint32_t geometryId = INVALID_INSTANCE_ID;
+    uint32_t vertexCount = 0;
+    uint32_t triangleCount = 0;
+    uint32_t hiClusterCount = 0;
+    uint32_t totalClusterCount = 0;
+  } m_pickedInfo;
+  bool m_pendingPickSelection = false;
+
   // use by-value copies for flexibility
   void initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange);
 
@@ -305,6 +318,8 @@ private:
   void applyCameraString();
   void resetSwRasterFeedback();
   void updateSwRasterFeedback();
+  void selectInstance(uint32_t instanceId);
+  void clearSelectedInstance();
 
   float decodePickingDepth(const shaderio::Readback& readback);
   bool  isPickingValid(const shaderio::Readback& readback);

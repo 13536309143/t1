@@ -141,8 +141,12 @@ struct UsagePercentages
 
 void LodClusters::viewportUI(ImVec2 corner)
 {
-  ImVec2     mouseAbsPos = ImGui::GetMousePos();
-  glm::uvec2 mousePos    = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
+  ImVec2 mouseAbsPos  = ImGui::GetMousePos();
+  ImVec2 imageSize    = ImGui::GetItemRectSize();
+  bool   imageHovered = ImGui::IsItemHovered();
+  float  mouseX       = std::max(0.0f, std::min(mouseAbsPos.x - corner.x, std::max(imageSize.x - 1.0f, 0.0f)));
+  float  mouseY       = std::max(0.0f, std::min(mouseAbsPos.y - corner.y, std::max(imageSize.y - 1.0f, 0.0f)));
+  glm::uvec2 mousePos = {mouseX, mouseY};
 
   m_frameConfig.frameConstants.mousePosition = glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
   // // 检测鼠标中键点击
@@ -174,6 +178,26 @@ void LodClusters::viewportUI(ImVec2 corner)
   //     }
   //   }
   // }
+  if(m_pendingPickSelection && m_renderer && m_scene && m_renderScene)
+  {
+    shaderio::Readback readback;
+    m_resources.getReadbackData(readback);
+    if(isPickingValid(readback))
+    {
+      selectInstance(readback.instanceId);
+    }
+    else
+    {
+      clearSelectedInstance();
+    }
+    m_pendingPickSelection = false;
+  }
+
+  if(imageHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+  {
+    m_pendingPickSelection = true;
+  }
+
   if(m_renderer)
   {
     shaderio::Readback readback;
@@ -211,6 +235,21 @@ void LodClusters::viewportUI(ImVec2 corner)
       ImGui::SetCursorPos({8, 8});
       ImGui::TextColored(hi_color, "%s", warning);
       ImGui::SetWindowFontScale(1.0);
+    }
+
+    if(m_pickedInfo.valid)
+    {
+      ImVec4 lo_color = {0, 0, 0, 1};
+      ImVec4 hi_color = {1.0f, 0.86f, 0.05f, 1.0f};
+      const char* text = "Selected model";
+      ImGui::SetCursorPos({8, warning ? 42.0f : 8.0f});
+      ImGui::TextColored(lo_color, "%s: instance %u, geometry %u, clusters %u high / %u total",
+                         text, m_pickedInfo.instanceId, m_pickedInfo.geometryId,
+                         m_pickedInfo.hiClusterCount, m_pickedInfo.totalClusterCount);
+      ImGui::SetCursorPos({7, warning ? 41.0f : 7.0f});
+      ImGui::TextColored(hi_color, "%s: instance %u, geometry %u, clusters %u high / %u total",
+                         text, m_pickedInfo.instanceId, m_pickedInfo.geometryId,
+                         m_pickedInfo.hiClusterCount, m_pickedInfo.totalClusterCount);
     }
   }
 }
@@ -956,6 +995,58 @@ void LodClusters::onUIRender()
         ImGui::Text("%s", formatMetric(m_scene->m_originalGeometryCount).c_str());
         ImGui::EndTable();
       }
+    }
+    if(m_scene && ImGui::CollapsingHeader("Model Tree", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      if(m_pickedInfo.valid)
+      {
+        ImGui::Text("Selected: Instance %u / Geometry %u", m_pickedInfo.instanceId, m_pickedInfo.geometryId);
+        ImGui::Text("Clusters: %u high, %u total LOD", m_pickedInfo.hiClusterCount, m_pickedInfo.totalClusterCount);
+        ImGui::Text("Triangles: %u", m_pickedInfo.triangleCount);
+        ImGui::Text("Vertices: %u", m_pickedInfo.vertexCount);
+        if(ImGui::Button("Clear Selection"))
+        {
+          clearSelectedInstance();
+        }
+      }
+      else
+      {
+        ImGui::TextDisabled("No model selected");
+      }
+
+      std::vector<std::vector<uint32_t>> instancesByGeometry(m_scene->getActiveGeometryCount());
+      for(uint32_t instanceId = 0; instanceId < uint32_t(m_scene->m_instances.size()); instanceId++)
+      {
+        const uint32_t geometryId = m_scene->m_instances[instanceId].geometryID;
+        if(geometryId < instancesByGeometry.size())
+        {
+          instancesByGeometry[geometryId].push_back(instanceId);
+        }
+      }
+
+      ImGui::BeginChild("##ModelTree", ImVec2(0, 280 * ImGui::GetWindowDpiScale()), true);
+      for(uint32_t geometryId = 0; geometryId < uint32_t(instancesByGeometry.size()); geometryId++)
+      {
+        const Scene::GeometryView& geometry = m_scene->getActiveGeometry(geometryId);
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth;
+        bool geometryOpen = ImGui::TreeNodeEx((void*)(uintptr_t(geometryId) + 1), flags, "Geometry %u  (%zu instances, %u clusters)",
+                                              geometryId, instancesByGeometry[geometryId].size(), geometry.hiClustersCount);
+        if(geometryOpen)
+        {
+          for(uint32_t instanceId : instancesByGeometry[geometryId])
+          {
+            bool selected = m_pickedInfo.valid && m_pickedInfo.instanceId == instanceId;
+            ImGui::PushID(int(instanceId));
+            if(ImGui::Selectable(fmt::format("Instance {}  |  {} tris", instanceId, geometry.hiTriangleCount).c_str(), selected))
+            {
+              selectInstance(instanceId);
+            }
+            ImGui::PopID();
+          }
+          ImGui::TreePop();
+        }
+      }
+      ImGui::EndChild();
     }
     if(m_renderer && ImGui::CollapsingHeader("Traversal", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {

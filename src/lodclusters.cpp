@@ -233,6 +233,7 @@ void LodClusters::deinitRenderScene()
 void LodClusters::deinitScene()
 {
   deinitRenderScene();
+  clearSelectedInstance();
 
   if(m_scene)
   {
@@ -1175,6 +1176,43 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
   {
     applyCameraString();
   }
+}
+
+void LodClusters::selectInstance(uint32_t instanceId)
+{
+  if(!m_scene || instanceId >= m_scene->m_instances.size())
+  {
+    clearSelectedInstance();
+    return;
+  }
+
+  const Scene::Instance& instance = m_scene->m_instances[instanceId];
+  if(instance.geometryID >= m_scene->getActiveGeometryCount())
+  {
+    clearSelectedInstance();
+    return;
+  }
+
+  const Scene::GeometryView& geometry = m_scene->getActiveGeometry(instance.geometryID);
+
+  m_pickedInfo.valid             = true;
+  m_pickedInfo.instanceId        = instanceId;
+  m_pickedInfo.geometryId        = instance.geometryID;
+  m_pickedInfo.vertexCount       = geometry.hiVerticesCount;
+  m_pickedInfo.triangleCount     = geometry.hiTriangleCount;
+  m_pickedInfo.hiClusterCount    = geometry.hiClustersCount;
+  m_pickedInfo.totalClusterCount = geometry.totalClustersCount;
+
+  m_frameConfig.selectedInstanceID          = instanceId;
+  m_frameConfig.highlightSelectedInstance   = true;
+}
+
+void LodClusters::clearSelectedInstance()
+{
+  m_pickedInfo = {};
+  m_frameConfig.selectedInstanceID        = INVALID_INSTANCE_ID;
+  m_frameConfig.highlightSelectedInstance = false;
+  m_pendingPickSelection                  = false;
 }
 
 float LodClusters::decodePickingDepth(const shaderio::Readback& readback)

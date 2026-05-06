@@ -17,6 +17,9 @@
 layout(push_constant) uniform pushData
 {
   uint numRenderInstances;
+  uint selectedInstanceID;
+  uint selectedOnly;
+  uint _pad;
 }
 push;
 

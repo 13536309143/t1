@@ -566,9 +566,9 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         renderClusterBboxes(cmd, m_sceneBuildBuffer);
       }
       // 调试：绘制大 Instance 边界框
-      if(pass == lastPass && frame.showInstanceBboxes)
+      if(pass == lastPass && (frame.showInstanceBboxes || frame.highlightSelectedInstance))
       {
-        renderInstanceBboxes(cmd);
+        renderInstanceBboxes(cmd, frame.selectedInstanceID, !frame.showInstanceBboxes);
       }
       vkCmdEndRendering(cmd);// 结束渲染通道
     }

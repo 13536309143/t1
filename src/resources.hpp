@@ -33,8 +33,10 @@ struct FrameConfig
 
   bool  showInstanceBboxes = false;
   bool  showClusterBboxes  = false;
+  bool  highlightSelectedInstance = false;
   bool  freezeCulling      = false;
   bool  freezeLoD          = false;
+  uint32_t selectedInstanceID = ~0u;
   float lodPixelError      = 1.0f;
   // increase error by this for instances not having primary visibility in ray tracing
   float culledErrorScale = 2.0f;

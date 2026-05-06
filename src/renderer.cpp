@@ -193,7 +193,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   m_basicDset.init(bindings, res.m_device);
 
   nvvk::createPipelineLayout(res.m_device, &m_basicPipelineLayout, {m_basicDset.getLayout()},
-                             {{m_basicShaderFlags, 0, sizeof(uint32_t)}});
+                             {{m_basicShaderFlags, 0, sizeof(uint32_t) * 4}});
 
   nvvk::GraphicsPipelineCreator graphicsGen;
   nvvk::GraphicsPipelineState   state                = res.m_basicGraphicsState;
@@ -223,12 +223,19 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullscreenAtomicRasterFragmentShader));
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
 }
-void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
+void Renderer::renderInstanceBboxes(VkCommandBuffer cmd, uint32_t selectedInstanceID, bool selectedOnly)
 {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderInstanceBboxes);
-  uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
-  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &numRenderInstances);
+  struct PushData
+  {
+    uint32_t numRenderInstances;
+    uint32_t selectedInstanceID;
+    uint32_t selectedOnly;
+    uint32_t _pad;
+  } push = {uint32_t(m_renderInstances.size()), selectedInstanceID, selectedOnly ? 1u : 0u, 0u};
+  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(push), &push);
+  uint32_t numRenderInstances = push.numRenderInstances;
   uint32_t workGroupCount = (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes;
   if(m_config.useEXTmeshShader)
   {

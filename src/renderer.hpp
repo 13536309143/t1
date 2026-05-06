@@ -92,7 +92,7 @@ protected:
   void updateBasicDescriptors(Resources& res, RenderScene& scene, const nvvk::Buffer* sceneBuildBuffer = nullptr);
   void writeAtomicRaster(VkCommandBuffer cmd);
   void writeBackgroundSky(VkCommandBuffer cmd);
-  void renderInstanceBboxes(VkCommandBuffer cmd);
+  void renderInstanceBboxes(VkCommandBuffer cmd, uint32_t selectedInstanceID, bool selectedOnly);
   void renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer);
   struct BasicShaders
   {
