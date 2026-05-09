@@ -62,6 +62,8 @@ public:
   virtual void deinit(Resources& res) = 0;
   virtual ~Renderer() {};  // Defined only so that inherited classes also have virtual destructors. Use deinit().
   virtual void updatedFrameBuffer(Resources& res, RenderScene& rscene) { updateBasicDescriptors(res, rscene); };
+  void updateRenderInstances(Resources& res, const Scene& scene, const RendererConfig& config);
+  void updateRenderInstancesRange(Resources& res, const Scene& scene, const RendererConfig& config, uint32_t first, uint32_t count);
   struct ResourceUsageInfo
   {
     size_t operationsMemBytes{};
@@ -85,6 +87,8 @@ public:
   uint32_t getMaxTraversalTasks() const { return m_maxTraversalTasks; }
 
 protected:
+  void rebuildRenderInstances(const Scene& scene, const RendererConfig& config);
+  void rebuildRenderInstance(const Scene& scene, const RendererConfig& config, size_t index);
   void initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void deinitBasics(Resources& res);
   bool initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config);

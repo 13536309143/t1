@@ -155,6 +155,9 @@ public:
               const SceneLoaderConfig&     loaderConfig,
               const std::string&           cacheSuffix,
               bool                         skipCache);
+  void   initEmpty(const SceneConfig& config = SceneConfig{});
+  void   appendScene(const Scene& source, const glm::mat4& transform);
+  void   refitBounds();
   bool   saveCache() const;
   void   deinit();
 

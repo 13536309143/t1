@@ -281,6 +281,114 @@ void Scene::deinit()
   *this = {};
 }
 
+void Scene::initEmpty(const SceneConfig& config)
+{
+  *this = {};
+  m_config               = config;
+  m_originalInstanceCount = 0;
+  m_originalGeometryCount = 0;
+  m_activeGeometryCount   = 0;
+  m_bbox                  = {{0, 0, 0}, {0, 0, 0}, 0, 0};
+  m_gridBbox              = m_bbox;
+}
+
+void Scene::appendScene(const Scene& source, const glm::mat4& transform)
+{
+  const uint32_t geometryOffset = uint32_t(m_geometryViews.size());
+
+  m_geometryViews.reserve(m_geometryViews.size() + source.m_geometryViews.size());
+  for(const GeometryView& geometry : source.m_geometryViews)
+  {
+    m_geometryViews.push_back(geometry);
+  }
+
+  m_instances.reserve(m_instances.size() + source.m_instances.size());
+  for(const Instance& sourceInstance : source.m_instances)
+  {
+    Instance instance = sourceInstance;
+    instance.geometryID += geometryOffset;
+    instance.matrix = transform * sourceInstance.matrix;
+    m_instances.push_back(instance);
+  }
+
+  m_cameras.reserve(m_cameras.size() + source.m_cameras.size());
+  for(Camera camera : source.m_cameras)
+  {
+    camera.worldMatrix = transform * camera.worldMatrix;
+    m_cameras.push_back(camera);
+  }
+
+  m_hasTwoSided       = m_hasTwoSided || source.m_hasTwoSided;
+  m_hasVertexNormals  = m_hasVertexNormals || source.m_hasVertexNormals;
+  m_hasVertexTexCoord0 = m_hasVertexTexCoord0 || source.m_hasVertexTexCoord0;
+  m_hasVertexTexCoord1 = m_hasVertexTexCoord1 || source.m_hasVertexTexCoord1;
+  m_hasVertexTangents  = m_hasVertexTangents || source.m_hasVertexTangents;
+
+  m_originalGeometryCount = m_geometryViews.size();
+  m_activeGeometryCount   = m_originalGeometryCount;
+  m_originalInstanceCount = m_instances.size();
+
+  if(!m_instances.empty())
+  {
+    computeInstanceBBoxes();
+    m_gridBbox = m_bbox;
+  }
+
+  m_maxClusterTriangles     = std::max(m_maxClusterTriangles, source.m_maxClusterTriangles);
+  m_maxClusterVertices      = std::max(m_maxClusterVertices, source.m_maxClusterVertices);
+  m_maxPerGeometryClusters  = std::max(m_maxPerGeometryClusters, source.m_maxPerGeometryClusters);
+  m_maxPerGeometryTriangles = std::max(m_maxPerGeometryTriangles, source.m_maxPerGeometryTriangles);
+  m_maxPerGeometryVertices  = std::max(m_maxPerGeometryVertices, source.m_maxPerGeometryVertices);
+  m_maxLodLevelsCount       = std::max(m_maxLodLevelsCount, source.m_maxLodLevelsCount);
+  m_hiPerGeometryClusters   = std::max(m_hiPerGeometryClusters, source.m_hiPerGeometryClusters);
+  m_hiPerGeometryTriangles  = std::max(m_hiPerGeometryTriangles, source.m_hiPerGeometryTriangles);
+  m_hiPerGeometryVertices   = std::max(m_hiPerGeometryVertices, source.m_hiPerGeometryVertices);
+  m_hiClustersCount += source.m_hiClustersCount;
+  m_hiVerticesCount += source.m_hiVerticesCount;
+  m_hiTrianglesCount += source.m_hiTrianglesCount;
+  m_hiClustersCountInstanced += source.m_hiClustersCountInstanced;
+  m_hiTrianglesCountInstanced += source.m_hiTrianglesCountInstanced;
+  m_totalClustersCount += source.m_totalClustersCount;
+  m_totalTrianglesCount += source.m_totalTrianglesCount;
+  m_totalVerticesCount += source.m_totalVerticesCount;
+  m_isBig = m_isBig || source.m_isBig;
+
+  for(size_t i = 0; i < m_histograms.clusterTriangles.size(); i++)
+  {
+    m_histograms.clusterTriangles[i] += source.m_histograms.clusterTriangles[i];
+  }
+  for(size_t i = 0; i < m_histograms.clusterVertices.size(); i++)
+  {
+    m_histograms.clusterVertices[i] += source.m_histograms.clusterVertices[i];
+  }
+  for(size_t i = 0; i < m_histograms.groupClusters.size(); i++)
+  {
+    m_histograms.groupClusters[i] += source.m_histograms.groupClusters[i];
+  }
+  for(size_t i = 0; i < m_histograms.nodeChildren.size(); i++)
+  {
+    m_histograms.nodeChildren[i] += source.m_histograms.nodeChildren[i];
+  }
+  for(size_t i = 0; i < m_histograms.lodLevels.size(); i++)
+  {
+    m_histograms.lodLevels[i] += source.m_histograms.lodLevels[i];
+  }
+  computeHistogramMaxs();
+}
+
+void Scene::refitBounds()
+{
+  if(m_instances.empty())
+  {
+    m_bbox     = {{0, 0, 0}, {0, 0, 0}, 0, 0};
+    m_gridBbox = m_bbox;
+    return;
+  }
+
+  computeInstanceBBoxes();
+  m_gridBbox = m_bbox;
+}
+
 void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 {
   m_gridConfig = gridConfig;

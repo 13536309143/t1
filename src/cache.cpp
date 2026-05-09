@@ -301,12 +301,29 @@ bool Scene::saveCache() const
 
   nvutils::FileReadOverWriteMapping outMapping;
 
-  std::string outFilename = nvutils::utf8FromPath(m_filePath) + ".zippp";
+  std::string outFilename = nvutils::utf8FromPath(m_cacheFilePath);
 
   if(!outMapping.open(outFilename.c_str(), dataOffset))
   {
-    LOGE("Scene::saveCache failed to save file %s\n", outFilename.c_str());
-    return false;
+    // The file mapping helper checks free disk space before CREATE_ALWAYS truncates an existing cache.
+    // For very large caches, retry after removing the old cache so its space is counted as free.
+    if(std::filesystem::exists(m_cacheFilePath))
+    {
+      try
+      {
+        std::filesystem::remove(m_cacheFilePath);
+      }
+      catch(const std::filesystem::filesystem_error& e)
+      {
+        LOGW("Scene::saveCache failed to remove old cache %s: %s\n", outFilename.c_str(), e.what());
+      }
+    }
+
+    if(!outMapping.open(outFilename.c_str(), dataOffset))
+    {
+      LOGE("Scene::saveCache failed to save file %s\n", outFilename.c_str());
+      return false;
+    }
   }
 
   uint8_t* mappingData = static_cast<uint8_t*>(outMapping.data());

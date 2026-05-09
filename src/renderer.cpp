@@ -1,6 +1,7 @@
 //基类和通用接口
 #include <random>
 #include <vector>
+#include <cstring>
 #include <volk.h>
 #include <fmt/format.h>
 #include <glm/gtc/constants.hpp>
@@ -112,31 +113,13 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 {
   initBasicPipelines(res, rscene, config);
 
-  const Scene& scene = *rscene.scene;
-
-  m_renderInstances.resize(scene.m_instances.size());
-
-  for(size_t i = 0; i < m_renderInstances.size(); i++)
-  {
-    shaderio::RenderInstance&  renderInstance = m_renderInstances[i];
-    const Scene::Instance&     sceneInstance  = scene.m_instances[i];
-    const Scene::GeometryView& geometry       = scene.getActiveGeometry(sceneInstance.geometryID);
-    renderInstance                = {};
-    renderInstance.worldMatrix    = glm::mat4x3(sceneInstance.matrix);
-    renderInstance.worldMatrixI   = glm::mat4x3(glm::inverse(sceneInstance.matrix));
-    renderInstance.geometryID     = sceneInstance.geometryID;
-    renderInstance.materialID     = uint16_t(sceneInstance.materialID);
-    renderInstance.maxLodLevelRcp = geometry.lodLevelsCount > 1 ? 1.0f / float(geometry.lodLevelsCount - 1) : 0.0f;
-    renderInstance.packedColor    = glm::packUnorm4x8(sceneInstance.color);
-    renderInstance.twoSided       = sceneInstance.twoSided ? 1 : 0;
-    renderInstance.flipWinding =
-        (!sceneInstance.twoSided && ((glm::determinant(sceneInstance.matrix) <= 0) != config.flipWinding)) ? 1 : 0;
-  }
+  rebuildRenderInstances(*rscene.scene, config);
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU,
+                   VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
   NVVK_DBG_NAME(m_renderInstanceBuffer.buffer);
-  res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
+  memcpy(m_renderInstanceBuffer.mapping, m_renderInstances.data(), sizeof(shaderio::RenderInstance) * m_renderInstances.size());
   if(config.useSorting)
   {
     VrdxSorterStorageRequirements sorterRequirements = {};
@@ -146,6 +129,69 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     NVVK_DBG_NAME(m_sortingAuxBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sortingAuxBuffer.bufferSize, "operations", "traversal sorting");
   }
+}
+
+void Renderer::rebuildRenderInstances(const Scene& scene, const RendererConfig& config)
+{
+  m_renderInstances.resize(scene.m_instances.size());
+
+  for(size_t i = 0; i < m_renderInstances.size(); i++)
+  {
+    rebuildRenderInstance(scene, config, i);
+  }
+}
+
+void Renderer::rebuildRenderInstance(const Scene& scene, const RendererConfig& config, size_t index)
+{
+  shaderio::RenderInstance&  renderInstance = m_renderInstances[index];
+  const Scene::Instance&     sceneInstance  = scene.m_instances[index];
+  const Scene::GeometryView& geometry       = scene.getActiveGeometry(sceneInstance.geometryID);
+  renderInstance                = {};
+  renderInstance.worldMatrix    = glm::mat4x3(sceneInstance.matrix);
+  renderInstance.worldMatrixI   = glm::mat4x3(glm::inverse(sceneInstance.matrix));
+  renderInstance.geometryID     = sceneInstance.geometryID;
+  renderInstance.materialID     = uint16_t(sceneInstance.materialID);
+  renderInstance.maxLodLevelRcp = geometry.lodLevelsCount > 1 ? 1.0f / float(geometry.lodLevelsCount - 1) : 0.0f;
+  renderInstance.packedColor    = glm::packUnorm4x8(sceneInstance.color);
+  renderInstance.twoSided       = sceneInstance.twoSided ? 1 : 0;
+  renderInstance.flipWinding =
+      (!sceneInstance.twoSided && ((glm::determinant(sceneInstance.matrix) <= 0) != config.flipWinding)) ? 1 : 0;
+}
+
+void Renderer::updateRenderInstances(Resources& res, const Scene& scene, const RendererConfig& config)
+{
+  const size_t updateSize = sizeof(shaderio::RenderInstance) * scene.m_instances.size();
+  if(!m_renderInstanceBuffer.buffer || m_renderInstanceBuffer.bufferSize < updateSize)
+  {
+    return;
+  }
+
+  rebuildRenderInstances(scene, config);
+  memcpy(m_renderInstanceBuffer.mapping, m_renderInstances.data(), updateSize);
+}
+
+void Renderer::updateRenderInstancesRange(Resources& res, const Scene& scene, const RendererConfig& config, uint32_t first, uint32_t count)
+{
+  if(!count || !m_renderInstanceBuffer.buffer || first >= scene.m_instances.size())
+  {
+    return;
+  }
+
+  const uint32_t clampedCount = std::min<uint32_t>(count, uint32_t(scene.m_instances.size()) - first);
+  const size_t   updateOffset = sizeof(shaderio::RenderInstance) * first;
+  const size_t   updateSize   = sizeof(shaderio::RenderInstance) * clampedCount;
+  if(m_renderInstanceBuffer.bufferSize < updateOffset + updateSize || m_renderInstances.size() != scene.m_instances.size())
+  {
+    updateRenderInstances(res, scene, config);
+    return;
+  }
+
+  for(uint32_t i = 0; i < clampedCount; i++)
+  {
+    rebuildRenderInstance(scene, config, first + i);
+  }
+
+  memcpy(static_cast<uint8_t*>(m_renderInstanceBuffer.mapping) + updateOffset, m_renderInstances.data() + first, updateSize);
 }
 
 void Renderer::deinitBasics(Resources& res)
