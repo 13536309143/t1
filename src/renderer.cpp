@@ -1,6 +1,5 @@
 //基类和通用接口
 #include <random>
-#include <algorithm>
 #include <vector>
 #include <volk.h>
 #include <fmt/format.h>
@@ -135,7 +134,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
   }
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   NVVK_DBG_NAME(m_renderInstanceBuffer.buffer);
   res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
   if(config.useSorting)
@@ -156,70 +155,6 @@ void Renderer::deinitBasics(Resources& res)
   m_basicDset.deinit();
   res.m_allocator.destroyBuffer(m_renderInstanceBuffer);
   res.m_allocator.destroyBuffer(m_sortingAuxBuffer);
-  m_dirtyRenderInstances.clear();
-}
-
-bool Renderer::setInstanceTransform(uint32_t instanceId, const glm::mat4& matrix, bool twoSided)
-{
-  if(instanceId >= m_renderInstances.size())
-  {
-    return false;
-  }
-
-  shaderio::RenderInstance& renderInstance = m_renderInstances[instanceId];
-  renderInstance.worldMatrix               = glm::mat4x3(matrix);
-  renderInstance.worldMatrixI              = glm::mat4x3(glm::inverse(matrix));
-  renderInstance.twoSided                  = twoSided ? 1 : 0;
-  renderInstance.flipWinding =
-      (!twoSided && ((glm::determinant(matrix) <= 0) != m_config.flipWinding)) ? 1 : 0;
-
-  if(std::find(m_dirtyRenderInstances.begin(), m_dirtyRenderInstances.end(), instanceId) == m_dirtyRenderInstances.end())
-  {
-    m_dirtyRenderInstances.push_back(instanceId);
-  }
-  return true;
-}
-
-void Renderer::setInstanceTransforms(const Scene& scene)
-{
-  const uint32_t count = std::min(uint32_t(scene.m_instances.size()), uint32_t(m_renderInstances.size()));
-  for(uint32_t instanceId = 0; instanceId < count; instanceId++)
-  {
-    const Scene::Instance& instance = scene.m_instances[instanceId];
-    setInstanceTransform(instanceId, instance.matrix, instance.twoSided);
-  }
-}
-
-void Renderer::syncDirtyRenderInstances(VkCommandBuffer cmd)
-{
-  if(m_dirtyRenderInstances.empty() || !m_renderInstanceBuffer.buffer)
-  {
-    return;
-  }
-
-  std::sort(m_dirtyRenderInstances.begin(), m_dirtyRenderInstances.end());
-  m_dirtyRenderInstances.erase(std::unique(m_dirtyRenderInstances.begin(), m_dirtyRenderInstances.end()),
-                               m_dirtyRenderInstances.end());
-
-  for(uint32_t instanceId : m_dirtyRenderInstances)
-  {
-    if(instanceId >= m_renderInstances.size())
-    {
-      continue;
-    }
-
-    vkCmdUpdateBuffer(cmd, m_renderInstanceBuffer.buffer,
-                      sizeof(shaderio::RenderInstance) * VkDeviceSize(instanceId),
-                      sizeof(shaderio::RenderInstance), &m_renderInstances[instanceId]);
-  }
-
-  VkMemoryBarrier barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  barrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
-  barrier.dstAccessMask   = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr,
-                       0, nullptr);
-
-  m_dirtyRenderInstances.clear();
 }
 
 void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const nvvk::Buffer* sceneBuildBuffer)
@@ -258,7 +193,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   m_basicDset.init(bindings, res.m_device);
 
   nvvk::createPipelineLayout(res.m_device, &m_basicPipelineLayout, {m_basicDset.getLayout()},
-                             {{m_basicShaderFlags, 0, sizeof(uint32_t) * 4}});
+                             {{m_basicShaderFlags, 0, sizeof(uint32_t)}});
 
   nvvk::GraphicsPipelineCreator graphicsGen;
   nvvk::GraphicsPipelineState   state                = res.m_basicGraphicsState;
@@ -288,24 +223,12 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullscreenAtomicRasterFragmentShader));
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
 }
-void Renderer::renderInstanceBboxes(VkCommandBuffer cmd, uint32_t selectedInstanceID, bool selectedOnly)
+void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
 {
-  if(selectedOnly && selectedInstanceID >= m_renderInstances.size())
-  {
-    return;
-  }
-
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderInstanceBboxes);
-  struct PushData
-  {
-    uint32_t numRenderInstances;
-    uint32_t selectedInstanceID;
-    uint32_t selectedOnly;
-    uint32_t _pad;
-  } push = {selectedOnly ? 1u : uint32_t(m_renderInstances.size()), selectedInstanceID, selectedOnly ? 1u : 0u, 0u};
-  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(push), &push);
-  uint32_t numRenderInstances = push.numRenderInstances;
+  uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
+  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &numRenderInstances);
   uint32_t workGroupCount = (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes;
   if(m_config.useEXTmeshShader)
   {

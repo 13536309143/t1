@@ -15,15 +15,6 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
-layout(push_constant) uniform pushData
-{
-  uint numRenderInstances;
-  uint selectedInstanceID;
-  uint selectedOnly;
-  uint _pad;
-}
-push;
-
 layout(location=0) in Interpolants
 {
   flat uint instanceID;
@@ -32,8 +23,6 @@ layout(location=0) in Interpolants
 layout(location=0,index=0) out vec4 out_Color;
 void main()
 {
-  out_Color = IN.instanceID == push.selectedInstanceID ?
-              vec4(1.0, 0.86, 0.05, 1.0) :
-              unpackUnorm4x8(murmurHash(IN.instanceID)) * 0.9 + 0.1;
+  out_Color = unpackUnorm4x8(murmurHash(IN.instanceID)) * 0.9 + 0.1;
   out_Color.w = 1.0;
 }

@@ -3,7 +3,6 @@
 #include <thread>
 #include <volk.h>
 #include <fmt/format.h>
-#include <imgui/imgui.h>
 #include <nvutils/file_operations.hpp>
 #include <nvgui/camera.hpp>
 #include "lodclusters.hpp"
@@ -234,9 +233,6 @@ void LodClusters::deinitRenderScene()
 void LodClusters::deinitScene()
 {
   deinitRenderScene();
-  clearSelectedInstance();
-  m_originalInstanceMatrices.clear();
-  m_modelTreeInstancesByGeometry.clear();
 
   if(m_scene)
   {
@@ -757,10 +753,6 @@ void LodClusters::setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig c
 
 void LodClusters::updatedSceneGrid()
 {
-  captureOriginalInstanceTransforms();
-  rebuildModelTreeCache();
-  clearSelectedInstance();
-
   {
     glm::vec3 gridExtent = m_scene->m_gridBbox.hi - m_scene->m_gridBbox.lo;
     float     gridRadius = glm::length(gridExtent) * 0.5f;
@@ -1183,183 +1175,6 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
   {
     applyCameraString();
   }
-}
-
-void LodClusters::selectInstance(uint32_t instanceId)
-{
-  if(!m_scene || instanceId >= m_scene->m_instances.size())
-  {
-    clearSelectedInstance();
-    return;
-  }
-
-  const Scene::Instance& instance = m_scene->m_instances[instanceId];
-  if(instance.geometryID >= m_scene->getActiveGeometryCount())
-  {
-    clearSelectedInstance();
-    return;
-  }
-
-  const Scene::GeometryView& geometry = m_scene->getActiveGeometry(instance.geometryID);
-
-  m_pickedInfo.valid             = true;
-  m_pickedInfo.instanceId        = instanceId;
-  m_pickedInfo.geometryId        = instance.geometryID;
-  m_pickedInfo.vertexCount       = geometry.hiVerticesCount;
-  m_pickedInfo.triangleCount     = geometry.hiTriangleCount;
-  m_pickedInfo.hiClusterCount    = geometry.hiClustersCount;
-  m_pickedInfo.totalClusterCount = geometry.totalClustersCount;
-
-  m_frameConfig.selectedInstanceID          = instanceId;
-  m_frameConfig.highlightSelectedInstance   = true;
-}
-
-void LodClusters::clearSelectedInstance()
-{
-  m_pickedInfo = {};
-  m_frameConfig.selectedInstanceID        = INVALID_INSTANCE_ID;
-  m_frameConfig.highlightSelectedInstance = false;
-  m_pendingPickSelection                  = false;
-}
-
-void LodClusters::captureOriginalInstanceTransforms()
-{
-  m_originalInstanceMatrices.clear();
-  if(!m_scene)
-  {
-    return;
-  }
-
-  m_originalInstanceMatrices.reserve(m_scene->m_instances.size());
-  for(const Scene::Instance& instance : m_scene->m_instances)
-  {
-    m_originalInstanceMatrices.push_back(instance.matrix);
-  }
-}
-
-void LodClusters::rebuildModelTreeCache()
-{
-  m_modelTreeInstancesByGeometry.clear();
-  if(!m_scene)
-  {
-    return;
-  }
-
-  m_modelTreeInstancesByGeometry.resize(m_scene->getActiveGeometryCount());
-  for(uint32_t instanceId = 0; instanceId < uint32_t(m_scene->m_instances.size()); instanceId++)
-  {
-    const uint32_t geometryId = m_scene->m_instances[instanceId].geometryID;
-    if(geometryId < m_modelTreeInstancesByGeometry.size())
-    {
-      m_modelTreeInstancesByGeometry[geometryId].push_back(instanceId);
-    }
-  }
-}
-
-void LodClusters::applyInstanceTransform(uint32_t instanceId, const glm::mat4& matrix)
-{
-  if(!m_scene || instanceId >= m_scene->m_instances.size())
-  {
-    return;
-  }
-
-  Scene::Instance& instance = m_scene->m_instances[instanceId];
-  instance.matrix           = matrix;
-
-  if(m_renderer)
-  {
-    m_renderer->setInstanceTransform(instanceId, instance.matrix, instance.twoSided);
-  }
-
-  if(m_pickedInfo.valid && m_pickedInfo.instanceId == instanceId)
-  {
-    selectInstance(instanceId);
-  }
-}
-
-void LodClusters::resetSelectedInstanceTransform()
-{
-  if(!m_pickedInfo.valid || m_pickedInfo.instanceId >= m_originalInstanceMatrices.size())
-  {
-    return;
-  }
-
-  applyInstanceTransform(m_pickedInfo.instanceId, m_originalInstanceMatrices[m_pickedInfo.instanceId]);
-}
-
-void LodClusters::resetAllInstanceTransforms()
-{
-  if(!m_scene || m_originalInstanceMatrices.size() != m_scene->m_instances.size())
-  {
-    return;
-  }
-
-  for(uint32_t instanceId = 0; instanceId < uint32_t(m_scene->m_instances.size()); instanceId++)
-  {
-    m_scene->m_instances[instanceId].matrix = m_originalInstanceMatrices[instanceId];
-  }
-
-  if(m_renderer)
-  {
-    m_renderer->setInstanceTransforms(*m_scene);
-  }
-
-  if(m_pickedInfo.valid)
-  {
-    selectInstance(m_pickedInfo.instanceId);
-  }
-}
-
-void LodClusters::updateInteractiveInstanceControls()
-{
-  if(!m_tweak.interactiveMode || !m_pickedInfo.valid || !m_scene || m_pickedInfo.instanceId >= m_scene->m_instances.size())
-  {
-    return;
-  }
-
-  ImGuiIO& io = ImGui::GetIO();
-  ImGui::SetNextFrameWantCaptureKeyboard(true);
-  io.WantCaptureKeyboard = true;
-
-  if(io.WantTextInput)
-  {
-    return;
-  }
-
-  glm::vec3 direction(0.0f);
-  glm::mat4 viewI = glm::inverse(m_info.cameraManipulator->getViewMatrix());
-  glm::vec3 right = glm::normalize(glm::vec3(viewI[0]));
-  glm::vec3 up    = glm::normalize(glm::vec3(viewI[1]));
-  glm::vec3 fwd   = glm::normalize(-glm::vec3(viewI[2]));
-
-  if(ImGui::IsKeyDown(ImGuiKey_Keypad4))
-    direction -= right;
-  if(ImGui::IsKeyDown(ImGuiKey_Keypad6))
-    direction += right;
-  if(ImGui::IsKeyDown(ImGuiKey_Keypad2))
-    direction -= up;
-  if(ImGui::IsKeyDown(ImGuiKey_Keypad8))
-    direction += up;
-  if(ImGui::IsKeyDown(ImGuiKey_Keypad7))
-    direction -= fwd;
-  if(ImGui::IsKeyDown(ImGuiKey_Keypad9))
-    direction += fwd;
-
-  if(glm::length(direction) <= 0.0f)
-  {
-    return;
-  }
-
-  float sceneSize = m_frameConfig.frameConstants.sceneSize > 0.0f ? m_frameConfig.frameConstants.sceneSize : 1.0f;
-  float speed     = std::max(0.0f, m_tweak.interactiveMoveSpeed) * sceneSize;
-  if(ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift))
-    speed *= 4.0f;
-  if(ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl))
-    speed *= 0.25f;
-
-  glm::mat4 matrix = m_scene->m_instances[m_pickedInfo.instanceId].matrix;
-  matrix[3] += glm::vec4(glm::normalize(direction) * speed * io.DeltaTime, 0.0f);
-  applyInstanceTransform(m_pickedInfo.instanceId, matrix);
 }
 
 float LodClusters::decodePickingDepth(const shaderio::Readback& readback)

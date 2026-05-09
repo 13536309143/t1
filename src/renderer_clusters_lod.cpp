@@ -360,7 +360,6 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
   {
     // 获取屏幕缩放比例并计算当前相机的屏幕误差阈值
-    syncDirtyRenderInstances(cmd);
     glm::vec2 renderScale = res.getFramebufferWindow2RenderScale();
     float     pixelScale  = std::min(renderScale.x, renderScale.y);
     // clusterLodErrorOverDistance 这一段的作用是计算出一个几何误差度量值，
@@ -567,9 +566,9 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         renderClusterBboxes(cmd, m_sceneBuildBuffer);
       }
       // 调试：绘制大 Instance 边界框
-      if(pass == lastPass && (frame.showInstanceBboxes || frame.highlightSelectedInstance))
+      if(pass == lastPass && frame.showInstanceBboxes)
       {
-        renderInstanceBboxes(cmd, frame.selectedInstanceID, !frame.showInstanceBboxes);
+        renderInstanceBboxes(cmd);
       }
       vkCmdEndRendering(cmd);// 结束渲染通道
     }

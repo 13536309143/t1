@@ -62,8 +62,6 @@ public:
   virtual void deinit(Resources& res) = 0;
   virtual ~Renderer() {};  // Defined only so that inherited classes also have virtual destructors. Use deinit().
   virtual void updatedFrameBuffer(Resources& res, RenderScene& rscene) { updateBasicDescriptors(res, rscene); };
-  bool setInstanceTransform(uint32_t instanceId, const glm::mat4& matrix, bool twoSided);
-  void setInstanceTransforms(const Scene& scene);
   struct ResourceUsageInfo
   {
     size_t operationsMemBytes{};
@@ -94,9 +92,8 @@ protected:
   void updateBasicDescriptors(Resources& res, RenderScene& scene, const nvvk::Buffer* sceneBuildBuffer = nullptr);
   void writeAtomicRaster(VkCommandBuffer cmd);
   void writeBackgroundSky(VkCommandBuffer cmd);
-  void renderInstanceBboxes(VkCommandBuffer cmd, uint32_t selectedInstanceID, bool selectedOnly);
+  void renderInstanceBboxes(VkCommandBuffer cmd);
   void renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer);
-  void syncDirtyRenderInstances(VkCommandBuffer cmd);
   struct BasicShaders
   {
     shaderc::SpvCompilationResult fullScreenVertexShader;
@@ -127,7 +124,6 @@ protected:
   BasicPipelines m_basicPipelines;
 
   std::vector<shaderio::RenderInstance> m_renderInstances;
-  std::vector<uint32_t>                  m_dirtyRenderInstances;
   nvvk::Buffer                          m_renderInstanceBuffer;
 
   ResourceUsageInfo m_resourceReservedUsage{};
