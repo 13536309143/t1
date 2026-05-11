@@ -1,23 +1,13 @@
 // LodClusters 主文件 - 实现基于LOD (Level of Detail) 技术的集群渲染系统
 // 该文件包含了LOD集群的核心功能，包括场景加载、渲染器初始化、相机控制等
-#include <algorithm>
 #include <thread>
-#include <cmath>
-#include <fstream>
-#include <iomanip>
-#include <limits>
-#include <sstream>
 #include <volk.h>
 #include <fmt/format.h>
 #include <nvutils/file_operations.hpp>
 #include <nvgui/camera.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include "lodclusters.hpp"
 bool g_verbose = false;
 namespace lodclusters {
-namespace {
-bool sceneClusterConfigMatches(const Scene& scene, const SceneConfig& config);
-}
 // LodClusters 构造函数
 // 初始化LOD集群系统，设置参数注册表和默认配置
 // 参数: info - 包含应用程序信息的结构体
@@ -27,7 +17,7 @@ LodClusters::LodClusters(const Info& info)
   nvutils::ProfilerTimeline::CreateInfo createInfo;
   createInfo.name = "graphics";
   m_profilerTimeline = m_info.profilerManager->createTimeline(createInfo);
-  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb", ".cfg", ".lscene"}, &m_sceneFilePathDropNew);
+  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePathDropNew);
   m_info.parameterRegistry->add({"renderer"}, (int*)&m_tweak.renderer);
   m_info.parameterRegistry->add({"verbose"}, &g_verbose, true);
   m_info.parameterRegistry->add({"resetstats"}, &m_tweak.autoResetTimers);
@@ -40,13 +30,6 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->addVector({"sundirection"}, &m_frameConfig.frameConstants.skyParams.sunDirection);
   m_info.parameterRegistry->addVector({"suncolor"}, &m_frameConfig.frameConstants.skyParams.sunColor);
   m_info.parameterRegistry->add({"streaming"}, &m_tweak.useStreaming);
-  m_info.parameterRegistry->add({"sim"}, &m_simulation.enabled);
-  m_info.parameterRegistry->add({"simmotion"}, &m_simulation.motion);
-  m_info.parameterRegistry->add({"simtarget"}, &m_simulation.target);
-  m_info.parameterRegistry->add({"simscale"}, &m_simulation.timeScale);
-  m_info.parameterRegistry->add({"simspin"}, &m_simulation.spinDegrees);
-  m_info.parameterRegistry->add({"simamplitude"}, &m_simulation.amplitude);
-  m_info.parameterRegistry->add({"simorbit"}, &m_simulation.orbitRadius);
   m_info.parameterRegistry->add({"gridcopies"}, &m_sceneGridConfig.numCopies);
   m_info.parameterRegistry->add({"gridconfig"}, &m_sceneGridConfig.gridBits);
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
@@ -207,407 +190,6 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
 // 初始化渲染场景
 // 创建并初始化RenderScene对象，处理场景的渲染相关设置
 // 如果预加载失败，会自动尝试使用流式加载
-glm::mat4 LodClusters::getModelMatrix(const ModelAsset& model) const
-{
-  glm::mat4 matrix(1.0f);
-  matrix = glm::translate(matrix, model.translate);
-  matrix = glm::rotate(matrix, glm::radians(model.rotateDeg.x), glm::vec3(1.0f, 0.0f, 0.0f));
-  matrix = glm::rotate(matrix, glm::radians(model.rotateDeg.y), glm::vec3(0.0f, 1.0f, 0.0f));
-  matrix = glm::rotate(matrix, glm::radians(model.rotateDeg.z), glm::vec3(0.0f, 0.0f, 1.0f));
-  matrix = glm::scale(matrix, glm::max(model.scale, glm::vec3(0.001f)));
-  return matrix;
-}
-
-int LodClusters::findModelIndexForInstance(uint32_t instanceId) const
-{
-  for(int i = 0; i < int(m_modelAssets.size()); i++)
-  {
-    const ModelAsset& model = m_modelAssets[i];
-    if(!model.visible || model.compositeInstanceCount == 0)
-    {
-      continue;
-    }
-
-    const uint32_t first = model.compositeInstanceOffset;
-    const uint32_t last  = first + model.compositeInstanceCount;
-    if(instanceId >= first && instanceId < last)
-    {
-      return i;
-    }
-  }
-
-  return -1;
-}
-
-glm::vec3 LodClusters::getModelCenter(int modelIndex) const
-{
-  if(!m_scene || modelIndex < 0 || modelIndex >= int(m_modelAssets.size()))
-  {
-    return glm::vec3(0.0f);
-  }
-
-  const ModelAsset& model = m_modelAssets[modelIndex];
-  if(!model.visible || model.compositeInstanceCount == 0)
-  {
-    return model.translate;
-  }
-
-  glm::vec3 bboxLo(std::numeric_limits<float>::max());
-  glm::vec3 bboxHi(-std::numeric_limits<float>::max());
-  bool      valid = false;
-
-  for(uint32_t i = 0; i < model.compositeInstanceCount; i++)
-  {
-    const uint32_t instanceIndex = model.compositeInstanceOffset + i;
-    if(instanceIndex >= m_scene->m_instances.size())
-    {
-      continue;
-    }
-
-    const Scene::Instance& instance = m_scene->m_instances[instanceIndex];
-    if(instance.geometryID >= m_scene->getActiveGeometryCount())
-    {
-      continue;
-    }
-
-    const shaderio::BBox& bbox = m_scene->getActiveGeometry(instance.geometryID).bbox;
-    for(int x = 0; x < 2; x++)
-    {
-      for(int y = 0; y < 2; y++)
-      {
-        for(int z = 0; z < 2; z++)
-        {
-          const glm::vec3 corner(x ? bbox.hi.x : bbox.lo.x, y ? bbox.hi.y : bbox.lo.y, z ? bbox.hi.z : bbox.lo.z);
-          const glm::mat4& matrix =
-              m_simulationBaseMatrices.size() == m_scene->m_instances.size() ? m_simulationBaseMatrices[instanceIndex] :
-                                                                               instance.matrix;
-          const glm::vec3 world = glm::vec3(matrix * glm::vec4(corner, 1.0f));
-          bboxLo                = glm::min(bboxLo, world);
-          bboxHi                = glm::max(bboxHi, world);
-          valid                 = true;
-        }
-      }
-    }
-  }
-
-  return valid ? (bboxLo + bboxHi) * 0.5f : model.translate;
-}
-
-bool LodClusters::addModelToProject(const std::filesystem::path& filePath)
-{
-  if(filePath.empty())
-  {
-    return false;
-  }
-
-  LOGI("Importing model: %s\n", nvutils::utf8FromPath(filePath).c_str());
-
-  auto scene = std::make_unique<Scene>();
-  m_sceneProgress = 0;
-  m_sceneLoading  = true;
-  Scene::Result result = scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, false);
-  m_sceneLoading = false;
-
-  if(result != Scene::SCENE_RESULT_SUCCESS)
-  {
-    LOGW("Importing model failed: %s\n", nvutils::utf8FromPath(filePath).c_str());
-    return false;
-  }
-
-  bool savedCache = false;
-  if(!sceneClusterConfigMatches(*scene, m_sceneConfig))
-  {
-    LOGI("Cached cluster config mismatch for %s; rebuilding clusters and cache\n",
-         nvutils::utf8FromPath(filePath).c_str());
-    LOGI("  scene setting: %u triangles, %u vertices; loaded cache: %u triangles, %u vertices; loaded max: %u triangles, %u vertices\n",
-         m_sceneConfig.clusterTriangles, m_sceneConfig.clusterVertices, scene->m_config.clusterTriangles,
-         scene->m_config.clusterVertices, scene->m_maxClusterTriangles, scene->m_maxClusterVertices);
-
-    scene = std::make_unique<Scene>();
-    m_sceneProgress = 0;
-    m_sceneLoading  = true;
-    result = scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, true);
-    m_sceneLoading = false;
-
-    if(result != Scene::SCENE_RESULT_SUCCESS)
-    {
-      LOGW("Rebuilding model clusters failed: %s\n", nvutils::utf8FromPath(filePath).c_str());
-      return false;
-    }
-
-    savedCache = scene->saveCache();
-
-    if(!sceneClusterConfigMatches(*scene, m_sceneConfig))
-    {
-      LOGW("Rebuilt clusters still differ from requested limits: requested %uT/%uV, built max %uT/%uV\n",
-           m_sceneConfig.clusterTriangles, m_sceneConfig.clusterVertices, scene->m_maxClusterTriangles,
-           scene->m_maxClusterVertices);
-    }
-  }
-
-  if(!savedCache && !scene->m_loadedFromCache && m_sceneLoaderConfig.autoSaveCache)
-  {
-    scene->saveCache();
-  }
-
-  ModelAsset model;
-  model.filePath = filePath;
-  model.name     = filePath.stem().string();
-  model.scene    = std::move(scene);
-
-  m_modelAssets.push_back(std::move(model));
-  m_selectedModel = int(m_modelAssets.size()) - 1;
-  rebuildProjectScene(true);
-  return true;
-}
-
-void LodClusters::clearProject()
-{
-  deinitRenderer();
-  deinitRenderScene();
-  m_scene = nullptr;
-  m_modelAssets.clear();
-  m_selectedModel = -1;
-  m_projectFilePath.clear();
-  m_sceneFilePath.clear();
-  m_renderSceneCanPreload = false;
-
-  m_scene = std::make_unique<Scene>();
-  m_scene->initEmpty(m_sceneConfig);
-  captureSimulationBase();
-}
-
-void LodClusters::rebuildProjectScene(bool resetCamera)
-{
-  deinitRenderer();
-  deinitRenderScene();
-
-  m_scene = std::make_unique<Scene>();
-  m_scene->initEmpty(m_sceneConfig);
-
-  for(ModelAsset& model : m_modelAssets)
-  {
-    if(model.visible && model.scene)
-    {
-      model.compositeGeometryOffset = uint32_t(m_scene->getActiveGeometryCount());
-      model.compositeInstanceOffset = uint32_t(m_scene->m_instances.size());
-      model.compositeInstanceCount  = uint32_t(model.scene->m_instances.size());
-      m_scene->appendScene(*model.scene, getModelMatrix(model));
-    }
-    else
-    {
-      model.compositeGeometryOffset = 0;
-      model.compositeInstanceOffset = 0;
-      model.compositeInstanceCount  = 0;
-    }
-  }
-
-  m_renderSceneCanPreload = m_scene->getActiveGeometryCount() > 0
-                            && ScenePreloaded::canPreload(m_resources.getDeviceLocalHeapSize(), m_scene.get());
-
-  if(m_scene->m_instances.empty())
-  {
-    captureSimulationBase();
-    return;
-  }
-
-  initRenderScene();
-  initRenderer(m_tweak.renderer);
-
-  if(resetCamera || m_frames == 0)
-  {
-    postInitNewScene();
-  }
-  else
-  {
-    m_frameConfig.frameConstants.sceneSize = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
-    captureSimulationBase();
-  }
-
-  m_tweakLast           = m_tweak;
-  m_rendererConfigLast  = m_rendererConfig;
-  m_streamingConfigLast = m_streamingConfig;
-  m_sceneConfigLast     = m_sceneConfig;
-  m_sceneGridConfigLast = m_sceneGridConfig;
-}
-
-void LodClusters::updateModelTransform(int modelIndex)
-{
-  if(!m_scene || !m_renderer || modelIndex < 0 || modelIndex >= int(m_modelAssets.size()))
-  {
-    return;
-  }
-
-  ModelAsset& model = m_modelAssets[modelIndex];
-  if(!model.visible || !model.scene || !model.compositeInstanceCount)
-  {
-    rebuildProjectScene(false);
-    return;
-  }
-
-  const glm::mat4 modelMatrix = getModelMatrix(model);
-  for(uint32_t i = 0; i < model.compositeInstanceCount; i++)
-  {
-    Scene::Instance instance = model.scene->m_instances[i];
-    instance.geometryID += model.compositeGeometryOffset;
-    instance.matrix = modelMatrix * instance.matrix;
-    m_scene->m_instances[model.compositeInstanceOffset + i] = instance;
-  }
-
-  m_scene->refitBounds();
-  m_frameConfig.frameConstants.sceneSize = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
-  captureSimulationBase();
-  m_renderer->updateRenderInstances(m_resources, *m_scene, m_rendererConfig);
-}
-
-bool LodClusters::saveProjectFile(const std::filesystem::path& filePath)
-{
-  if(filePath.empty())
-  {
-    return false;
-  }
-
-  std::ofstream out(filePath);
-  if(!out)
-  {
-    LOGW("Saving project failed: %s\n", nvutils::utf8FromPath(filePath).c_str());
-    return false;
-  }
-
-  out << "lodclusters_project 1\n";
-  out << "model_count " << m_modelAssets.size() << "\n";
-  for(const ModelAsset& model : m_modelAssets)
-  {
-    out << "model " << std::quoted(nvutils::utf8FromPath(model.filePath)) << "\n";
-    out << "name " << std::quoted(model.name) << "\n";
-    out << "visible " << (model.visible ? 1 : 0) << "\n";
-    out << "translate " << model.translate.x << " " << model.translate.y << " " << model.translate.z << "\n";
-    out << "rotate " << model.rotateDeg.x << " " << model.rotateDeg.y << " " << model.rotateDeg.z << "\n";
-    out << "scale " << model.scale.x << " " << model.scale.y << " " << model.scale.z << "\n";
-    out << "end_model\n";
-  }
-
-  m_projectFilePath = filePath;
-  LOGI("Project saved: %s\n", nvutils::utf8FromPath(filePath).c_str());
-  return true;
-}
-
-bool LodClusters::loadProjectFile(const std::filesystem::path& filePath)
-{
-  std::ifstream in(filePath);
-  if(!in)
-  {
-    LOGW("Loading project failed: %s\n", nvutils::utf8FromPath(filePath).c_str());
-    return false;
-  }
-
-  std::string token;
-  int         version = 0;
-  in >> token >> version;
-  if(token != "lodclusters_project" || version != 1)
-  {
-    LOGW("Unsupported project file: %s\n", nvutils::utf8FromPath(filePath).c_str());
-    return false;
-  }
-
-  clearProject();
-
-  size_t modelCount = 0;
-  in >> token >> modelCount;
-  if(token != "model_count")
-  {
-    return false;
-  }
-
-  for(size_t i = 0; i < modelCount; i++)
-  {
-    std::string pathString;
-    std::string name;
-    bool        visible = true;
-    glm::vec3   translate(0.0f);
-    glm::vec3   rotateDeg(0.0f);
-    glm::vec3   scale(1.0f);
-
-    in >> token >> std::quoted(pathString);
-    if(token != "model")
-      return false;
-
-    while(in >> token)
-    {
-      if(token == "end_model")
-      {
-        break;
-      }
-      if(token == "name")
-      {
-        in >> std::quoted(name);
-      }
-      else if(token == "visible")
-      {
-        int visibleInt = 1;
-        in >> visibleInt;
-        visible = visibleInt != 0;
-      }
-      else if(token == "translate")
-      {
-        in >> translate.x >> translate.y >> translate.z;
-      }
-      else if(token == "rotate")
-      {
-        in >> rotateDeg.x >> rotateDeg.y >> rotateDeg.z;
-      }
-      else if(token == "scale")
-      {
-        in >> scale.x >> scale.y >> scale.z;
-      }
-    }
-
-    auto scene = std::make_unique<Scene>();
-    std::filesystem::path modelPath = nvutils::pathFromUtf8(pathString);
-    m_sceneProgress = 0;
-    m_sceneLoading  = true;
-    Scene::Result result = scene->init(modelPath, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, false);
-    m_sceneLoading = false;
-    if(result != Scene::SCENE_RESULT_SUCCESS)
-    {
-      LOGW("Skipping model from project: %s\n", pathString.c_str());
-      continue;
-    }
-
-    if(!sceneClusterConfigMatches(*scene, m_sceneConfig))
-    {
-      LOGI("Cached cluster config mismatch for %s; rebuilding clusters and cache\n", pathString.c_str());
-      scene = std::make_unique<Scene>();
-      m_sceneProgress = 0;
-      m_sceneLoading  = true;
-      result = scene->init(modelPath, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, true);
-      m_sceneLoading = false;
-      if(result != Scene::SCENE_RESULT_SUCCESS)
-      {
-        LOGW("Skipping model after failed cluster rebuild: %s\n", pathString.c_str());
-        continue;
-      }
-      scene->saveCache();
-    }
-
-    ModelAsset model;
-    model.filePath  = modelPath;
-    model.name      = name.empty() ? modelPath.stem().string() : name;
-    model.visible   = visible;
-    model.translate = translate;
-    model.rotateDeg = rotateDeg;
-    model.scale     = scale;
-    model.scene     = std::move(scene);
-    m_modelAssets.push_back(std::move(model));
-  }
-
-  m_projectFilePath = filePath;
-  m_selectedModel   = m_modelAssets.empty() ? -1 : 0;
-  rebuildProjectScene(true);
-  LOGI("Project loaded: %s\n", nvutils::utf8FromPath(filePath).c_str());
-  return true;
-}
-
 void LodClusters::initRenderScene()
 {
   assert(m_scene);
@@ -657,8 +239,6 @@ void LodClusters::deinitScene()
     m_scene->deinit();
     m_scene = nullptr;
   }
-  m_modelAssets.clear();
-  m_selectedModel = -1;
 }
 
 void LodClusters::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
@@ -863,242 +443,6 @@ void LodClusters::postInitNewScene()
     m_tweak.facetShading = true;
 
   m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
-  captureSimulationBase();
-}
-
-namespace {
-glm::vec3 safeNormalize(const glm::vec3& v, const glm::vec3& fallback)
-{
-  const float len2 = glm::dot(v, v);
-  return len2 > 0.000001f ? v * glm::inversesqrt(len2) : fallback;
-}
-
-bool sceneClusterConfigMatches(const Scene& scene, const SceneConfig& config)
-{
-  return scene.m_config.clusterTriangles == config.clusterTriangles && scene.m_config.clusterVertices == config.clusterVertices
-         && scene.m_maxClusterTriangles <= config.clusterTriangles && scene.m_maxClusterVertices <= config.clusterVertices;
-}
-}
-
-void LodClusters::captureSimulationBase()
-{
-  m_simulationBaseMatrices.clear();
-  if(!m_scene)
-  {
-    return;
-  }
-
-  m_simulationBaseMatrices.reserve(m_scene->m_instances.size());
-  for(const Scene::Instance& instance : m_scene->m_instances)
-  {
-    m_simulationBaseMatrices.push_back(instance.matrix);
-  }
-
-  const int maxInstance = std::max(0, int(m_scene->m_instances.size()) - 1);
-  m_simulation.selected = glm::clamp(m_simulation.selected, 0, maxInstance);
-  m_simulation.selectedGeom =
-      glm::clamp(m_simulation.selectedGeom, 0, std::max(0, int(m_scene->getActiveGeometryCount()) - 1));
-}
-
-void LodClusters::resetSimulationPose()
-{
-  if(!m_scene)
-  {
-    return;
-  }
-
-  if(m_simulationBaseMatrices.size() != m_scene->m_instances.size())
-  {
-    captureSimulationBase();
-  }
-
-  for(size_t i = 0; i < m_scene->m_instances.size(); i++)
-  {
-    m_scene->m_instances[i].matrix = m_simulationBaseMatrices[i];
-  }
-
-  m_simulation.time            = 0.0f;
-  m_simulation.manualTranslate = glm::vec3(0.0f);
-  m_simulation.manualRotateDeg = glm::vec3(0.0f);
-  m_simulation.manualScale     = glm::vec3(1.0f);
-  uploadSimulationPose();
-}
-
-void LodClusters::uploadSimulationPose()
-{
-  if(m_renderer && m_scene)
-  {
-    m_renderer->updateRenderInstances(m_resources, *m_scene, m_rendererConfig);
-    m_equalFrames = 0;
-  }
-}
-
-void LodClusters::uploadSimulationPoseRange(uint32_t firstInstance, uint32_t instanceCount)
-{
-  if(m_renderer && m_scene)
-  {
-    m_renderer->updateRenderInstancesRange(m_resources, *m_scene, m_rendererConfig, firstInstance, instanceCount);
-    m_equalFrames = 0;
-  }
-}
-
-void LodClusters::updateSimulation(float deltaTime, bool forceUpdate)
-{
-  if(!m_scene || !m_renderer || m_scene->m_instances.empty())
-  {
-    return;
-  }
-
-  if(m_simulationBaseMatrices.size() != m_scene->m_instances.size())
-  {
-    captureSimulationBase();
-    forceUpdate = true;
-  }
-
-  const bool animated = m_simulation.enabled && m_simulation.playing;
-  if(!animated && !forceUpdate && !m_simulation.dirty)
-  {
-    return;
-  }
-
-  if(animated)
-  {
-    m_simulation.time += deltaTime * m_simulation.timeScale;
-  }
-
-  const glm::vec3 rotationAxis    = safeNormalize(m_simulation.rotationAxis, glm::vec3(0.0f, 1.0f, 0.0f));
-  const glm::vec3 translationAxis = safeNormalize(m_simulation.translationAxis, glm::vec3(1.0f, 0.0f, 0.0f));
-
-  const int maxInstance = int(m_scene->m_instances.size()) - 1;
-  m_simulation.selected = glm::clamp(m_simulation.selected, 0, maxInstance);
-
-  const float t = m_simulation.time;
-  const bool  hasSelectedModel =
-      m_selectedModel >= 0 && m_selectedModel < int(m_modelAssets.size()) && m_modelAssets[m_selectedModel].visible
-      && m_modelAssets[m_selectedModel].compositeInstanceCount > 0;
-  if(m_simulation.target == SIM_TARGET_MODEL && !hasSelectedModel)
-  {
-    m_simulation.dirty = false;
-    return;
-  }
-
-  const bool needsSelectedModelCenter =
-      m_simulation.target == SIM_TARGET_MODEL && (m_simulation.motion == SIM_MOTION_SPIN || m_simulation.motion == SIM_MOTION_WAVE);
-  const glm::vec3 selectedModelCenter =
-      needsSelectedModelCenter ? getModelCenter(m_selectedModel) : glm::vec3(0.0f);
-  const auto      isSelectedModelInstance = [&](size_t instanceIndex) {
-    if(!hasSelectedModel)
-    {
-      return false;
-    }
-    const ModelAsset& model = m_modelAssets[m_selectedModel];
-    return instanceIndex >= model.compositeInstanceOffset
-           && instanceIndex < size_t(model.compositeInstanceOffset + model.compositeInstanceCount);
-  };
-
-  uint32_t updateFirst = 0;
-  uint32_t updateCount = uint32_t(m_scene->m_instances.size());
-  bool     contiguousUpdate = false;
-
-  if(m_simulation.target == SIM_TARGET_MODEL && hasSelectedModel)
-  {
-    const ModelAsset& model = m_modelAssets[m_selectedModel];
-    updateFirst            = model.compositeInstanceOffset;
-    updateCount            = model.compositeInstanceCount;
-    contiguousUpdate       = true;
-  }
-  else if(m_simulation.target == SIM_TARGET_SELECTED)
-  {
-    updateFirst      = uint32_t(m_simulation.selected);
-    updateCount      = 1;
-    contiguousUpdate = true;
-  }
-
-  const size_t updateLast = std::min<size_t>(size_t(updateFirst) + updateCount, m_scene->m_instances.size());
-  for(size_t i = updateFirst; i < updateLast; i++)
-  {
-    Scene::Instance& instance = m_scene->m_instances[i];
-    const glm::mat4  base     = m_simulationBaseMatrices[i];
-
-    bool affected = m_simulation.target == SIM_TARGET_ALL;
-    affected = affected || (m_simulation.target == SIM_TARGET_SELECTED && int(i) == m_simulation.selected);
-    affected = affected
-               || (m_simulation.target == SIM_TARGET_GEOMETRY && int(instance.geometryID) == m_simulation.selectedGeom);
-    affected = affected || (m_simulation.target == SIM_TARGET_MODEL && isSelectedModelInstance(i));
-
-    glm::mat4 world = base;
-
-    if(m_simulation.enabled && affected)
-    {
-      const Scene::GeometryView& geometry = m_scene->getActiveGeometry(instance.geometryID);
-      const glm::vec3 objectCenter = (geometry.bbox.lo + geometry.bbox.hi) * 0.5f;
-      const glm::vec3 center =
-          m_simulation.target == SIM_TARGET_MODEL ? selectedModelCenter : glm::vec3(base * glm::vec4(objectCenter, 1.0f));
-      const float     phase        = m_simulation.target == SIM_TARGET_MODEL ? 0.0f : float(i) * m_simulation.phaseStride;
-
-      switch(m_simulation.motion)
-      {
-        case SIM_MOTION_SPIN:
-        {
-          const float angle = glm::radians(m_simulation.spinDegrees) * t + phase;
-          world = glm::translate(glm::mat4(1.0f), center) * glm::rotate(glm::mat4(1.0f), angle, rotationAxis)
-                  * glm::translate(glm::mat4(1.0f), -center) * base;
-          break;
-        }
-        case SIM_MOTION_ORBIT:
-        {
-          const float angle = m_simulation.linearSpeed * t + phase;
-          const glm::vec3 offset = glm::vec3(std::cos(angle), 0.0f, std::sin(angle)) * m_simulation.orbitRadius;
-          world = glm::translate(glm::mat4(1.0f), offset) * base;
-          break;
-        }
-        case SIM_MOTION_OSCILLATE:
-        {
-          const float wave = std::sin(m_simulation.linearSpeed * t + phase) * m_simulation.amplitude;
-          world = glm::translate(glm::mat4(1.0f), translationAxis * wave) * base;
-          break;
-        }
-        case SIM_MOTION_CONVEYOR:
-        {
-          const float travel = std::fmod(m_simulation.linearSpeed * t + phase, 2.0f) - 1.0f;
-          world = glm::translate(glm::mat4(1.0f), translationAxis * travel * m_simulation.amplitude) * base;
-          break;
-        }
-        case SIM_MOTION_WAVE:
-        {
-          const float wave  = std::sin(m_simulation.linearSpeed * t + phase) * m_simulation.amplitude;
-          const float angle = glm::radians(m_simulation.spinDegrees) * t + phase;
-          world = glm::translate(glm::mat4(1.0f), translationAxis * wave)
-                  * glm::translate(glm::mat4(1.0f), center) * glm::rotate(glm::mat4(1.0f), angle, rotationAxis)
-                  * glm::translate(glm::mat4(1.0f), -center) * base;
-          break;
-        }
-      }
-    }
-
-    if(int(i) == m_simulation.selected)
-    {
-      glm::mat4 manual(1.0f);
-      manual = glm::translate(manual, m_simulation.manualTranslate);
-      manual = glm::rotate(manual, glm::radians(m_simulation.manualRotateDeg.x), glm::vec3(1.0f, 0.0f, 0.0f));
-      manual = glm::rotate(manual, glm::radians(m_simulation.manualRotateDeg.y), glm::vec3(0.0f, 1.0f, 0.0f));
-      manual = glm::rotate(manual, glm::radians(m_simulation.manualRotateDeg.z), glm::vec3(0.0f, 0.0f, 1.0f));
-      manual = glm::scale(manual, glm::max(m_simulation.manualScale, glm::vec3(0.001f)));
-      world  = manual * world;
-    }
-
-    instance.matrix = world;
-  }
-
-  if(contiguousUpdate)
-  {
-    uploadSimulationPoseRange(updateFirst, uint32_t(updateLast - updateFirst));
-  }
-  else
-  {
-    uploadSimulationPose();
-  }
-  m_simulation.dirty = false;
 }
 
 void LodClusters::onAttach(nvapp::Application* app)
@@ -1178,17 +522,42 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_rendererConfig.useEXTmeshShader = true;
   }
 
-  m_cameraStringCommandLine = m_cameraString;
-
+  // Search for default scene if none was provided on the command line
   if(m_sceneFilePathDropNew.empty())
   {
-    clearProject();
+    const std::filesystem::path              exeDirectoryPath   = nvutils::getExecutablePath().parent_path();
+    const std::vector<std::filesystem::path> defaultSearchPaths = {
+        // regular build
+        std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_DOWNLOAD_DIRECTORY),
+        // install build
+        std::filesystem::absolute(exeDirectoryPath / "resources"),
+    };
+
+    m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
+    // m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("a.glb", defaultSearchPaths);
+    //m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("b.glb", defaultSearchPaths);
+    //m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("c.glb", defaultSearchPaths);
+    //m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("12.glb", defaultSearchPaths);
+    // enforce unique geometries in the sample scene
+    m_sceneGridConfig.uniqueGeometriesForCopies = true;
+
+    if(m_sceneGridConfig.numCopies == 1)
+    {
+      if(m_resources.getDeviceLocalHeapSize() >= 8ull * 1024 * 1024 * 1024)
+      {
+        m_sceneGridConfig.numCopies = 1;  // 32x32 grid
+      }
+      else
+      {
+        m_sceneGridConfig.numCopies =1;
+      }
+    }
   }
-  else
-  {
-    std::filesystem::path newFileDrop = m_sceneFilePathDropNew;
-    onFileDrop(newFileDrop);
-  }
+
+  m_cameraStringCommandLine = m_cameraString;
+
+  std::filesystem::path newFileDrop = m_sceneFilePathDropNew;
+  onFileDrop(newFileDrop);
 
   m_tweakLast          = m_tweak;
   m_sceneConfigLast    = m_sceneConfig;
@@ -1213,19 +582,9 @@ void LodClusters::onDetach()
 
 void LodClusters::saveCacheFile()
 {
-  if(m_selectedModel >= 0 && m_selectedModel < int(m_modelAssets.size()) && m_modelAssets[m_selectedModel].scene)
+  if(m_scene)
   {
-    m_modelAssets[m_selectedModel].scene->saveCache();
-  }
-  else
-  {
-    for(ModelAsset& model : m_modelAssets)
-    {
-      if(model.scene)
-      {
-        model.scene->saveCache();
-      }
-    }
+    m_scene->saveCache();
   }
 }
 
@@ -1288,15 +647,10 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
     return;
   }
 
-  if(filePath.extension() == ".lscene")
-  {
-    loadProjectFile(filePath);
-    m_sceneFilePathDropLast = filePath;
-    m_sceneFilePathDropNew  = filePath;
-    return;
-  }
+  LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());
+  deinitRenderer();
 
-  addModelToProject(filePath);
+  initScene(filePath, m_sceneCacheSuffix, false);
 }
 
 void LodClusters::doProcessingOnly()
@@ -1483,18 +837,7 @@ void LodClusters::handleChanges()
     sceneChanged = true;
 
     deinitRenderer();
-    for(ModelAsset& model : m_modelAssets)
-    {
-      if(model.filePath.empty())
-        continue;
-
-      auto scene = std::make_unique<Scene>();
-      if(scene->init(model.filePath, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, true) == Scene::SCENE_RESULT_SUCCESS)
-      {
-        model.scene = std::move(scene);
-      }
-    }
-    rebuildProjectScene(false);
+    initScene(m_sceneFilePath, m_scene->m_cacheSuffix, true);
   }
 
   if(!m_cameraString.empty() && m_cameraString != m_cameraStringLast)
@@ -1505,21 +848,6 @@ void LodClusters::handleChanges()
   bool sceneGridChanged = false;
   if(m_scene)
   {
-    const bool hasRenderableScene = m_scene->getActiveGeometryCount() > 0 && !m_scene->m_instances.empty();
-    if(!hasRenderableScene)
-    {
-      if(m_renderer)
-      {
-        deinitRenderer();
-      }
-      if(m_renderScene)
-      {
-        deinitRenderScene();
-      }
-      m_renderSceneCanPreload = false;
-    }
-    else
-    {
     if(!m_renderScene)
     {
       sceneGridChanged = true;
@@ -1532,8 +860,6 @@ void LodClusters::handleChanges()
       deinitRenderer();
       m_scene->updateSceneGrid(m_sceneGridConfig);
       updatedSceneGrid();
-      captureSimulationBase();
-      m_simulation.dirty = true;
     }
 
     bool renderSceneChanged = false;
@@ -1577,7 +903,6 @@ void LodClusters::handleChanges()
     {
       m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
       m_rendererFboChangeID = m_resources.m_fboChangeID;
-    }
     }
   }
 
@@ -1640,7 +965,6 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       m_rendererFboChangeID = m_resources.m_fboChangeID;
     }
 
-    updateSimulation(deltaTime);
 
     shaderio::FrameConstants& frameConstants = m_frameConfig.frameConstants;
 

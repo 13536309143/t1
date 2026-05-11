@@ -12,7 +12,6 @@
 #include <nvgui/property_editor.hpp>
 #include <nvgui/window.hpp>
 #include <nvgui/file_dialog.hpp>
-#include <nvutils/file_operations.hpp>
 #include "lodclusters.hpp"
 namespace lodclusters {
 #define MEMORY_WITH_BINARY_PREFIXES 1
@@ -146,29 +145,6 @@ void LodClusters::viewportUI(ImVec2 corner)
   glm::uvec2 mousePos    = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
 
   m_frameConfig.frameConstants.mousePosition = glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
-  if(m_scene && nvgui::isWindowHovered(ImGui::FindWindowByName("Viewport"))
-     && (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)
-         || (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::GetIO().KeyCtrl)))
-  {
-    shaderio::Readback readback;
-    m_resources.getReadbackData(readback);
-    if(isPickingValid(readback) && readback.instanceId < m_scene->m_instances.size())
-    {
-      m_simulation.selected     = int(readback.instanceId);
-      m_simulation.selectedGeom = int(m_scene->m_instances[readback.instanceId].geometryID);
-      const int pickedModel = findModelIndexForInstance(readback.instanceId);
-      if(pickedModel >= 0)
-      {
-        m_selectedModel     = pickedModel;
-        m_simulation.target = SIM_TARGET_MODEL;
-      }
-      else
-      {
-        m_simulation.target = SIM_TARGET_SELECTED;
-      }
-      m_simulation.dirty        = true;
-    }
-  }
   // // 检测鼠标中键点击
   // if(ImGui::IsMouseClicked(ImGuiMouseButton_Middle) && nvgui::isWindowHovered(ImGui::FindWindowByName("Viewport")))
   // {
@@ -318,176 +294,6 @@ void LodClusters::onUIRender()
 
   namespace PE = nvgui::PropertyEditor;
 
-  if(ImGui::Begin("Scene Hierarchy"))
-  {
-    if(ImGui::Button("Import Model"))
-    {
-      std::filesystem::path filePath =
-          nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Import model",
-                                      "glTF(.gltf, .glb)|*.gltf;*.glb|All supported|*.gltf;*.glb");
-      if(!filePath.empty())
-      {
-        addModelToProject(filePath);
-      }
-    }
-    ImGui::SameLine();
-    if(ImGui::Button("Clear"))
-    {
-      clearProject();
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Models: %zu", m_modelAssets.size());
-
-    int removeModel = -1;
-    for(int i = 0; i < int(m_modelAssets.size()); i++)
-    {
-      ModelAsset& model = m_modelAssets[i];
-      ImGui::PushID(i);
-      bool visible = model.visible;
-      if(ImGui::Checkbox("##visible", &visible))
-      {
-        model.visible = visible;
-        rebuildProjectScene(false);
-      }
-      ImGui::SameLine();
-
-      ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
-      if(i == m_selectedModel)
-        flags |= ImGuiTreeNodeFlags_Selected;
-      bool open = ImGui::TreeNodeEx(model.name.c_str(), flags);
-      if(ImGui::IsItemClicked())
-      {
-        m_selectedModel = i;
-      }
-
-      if(ImGui::BeginDragDropSource())
-      {
-        ImGui::SetDragDropPayload("LOD_MODEL_INDEX", &i, sizeof(int));
-        ImGui::Text("%s", model.name.c_str());
-        ImGui::EndDragDropSource();
-      }
-      if(ImGui::BeginDragDropTarget())
-      {
-        if(const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("LOD_MODEL_INDEX"))
-        {
-          int srcIndex = *static_cast<const int*>(payload->Data);
-          if(srcIndex != i && srcIndex >= 0 && srcIndex < int(m_modelAssets.size()))
-          {
-            ModelAsset moved = std::move(m_modelAssets[srcIndex]);
-            m_modelAssets.erase(m_modelAssets.begin() + srcIndex);
-            int dstIndex = i;
-            if(srcIndex < i)
-              dstIndex--;
-            m_modelAssets.insert(m_modelAssets.begin() + dstIndex, std::move(moved));
-            m_selectedModel = dstIndex;
-            rebuildProjectScene(false);
-          }
-        }
-        ImGui::EndDragDropTarget();
-      }
-
-      if(open)
-      {
-        ImGui::TextDisabled("%s", nvutils::utf8FromPath(model.filePath).c_str());
-        ImGui::Text("Instances: %zu", model.scene ? model.scene->m_instances.size() : 0);
-        ImGui::Text("Geometries: %zu", model.scene ? model.scene->getActiveGeometryCount() : 0);
-        if(ImGui::SmallButton("Remove"))
-        {
-          removeModel = i;
-        }
-        ImGui::TreePop();
-      }
-      ImGui::PopID();
-    }
-
-    if(removeModel >= 0)
-    {
-      m_modelAssets.erase(m_modelAssets.begin() + removeModel);
-      if(m_modelAssets.empty())
-        m_selectedModel = -1;
-      else
-        m_selectedModel = std::min(removeModel, int(m_modelAssets.size()) - 1);
-      rebuildProjectScene(false);
-    }
-
-    ImGui::Separator();
-    if(m_selectedModel >= 0 && m_selectedModel < int(m_modelAssets.size()))
-    {
-      ModelAsset& model = m_modelAssets[m_selectedModel];
-      bool transformChanged = false;
-      ImGui::Text("Selected: %s", model.name.c_str());
-      transformChanged |= ImGui::DragFloat3("Position", &model.translate.x, 0.01f, -100000.0f, 100000.0f, "%.3f");
-      transformChanged |= ImGui::DragFloat3("Rotation", &model.rotateDeg.x, 0.25f, -360.0f, 360.0f, "%.2f");
-      transformChanged |= ImGui::DragFloat3("Scale", &model.scale.x, 0.01f, 0.001f, 1000.0f, "%.3f");
-      if(transformChanged)
-      {
-        updateModelTransform(m_selectedModel);
-      }
-      if(ImGui::Button("Reset Transform"))
-      {
-        model.translate = glm::vec3(0.0f);
-        model.rotateDeg = glm::vec3(0.0f);
-        model.scale     = glm::vec3(1.0f);
-        updateModelTransform(m_selectedModel);
-      }
-
-      if(ImGui::CollapsingHeader("Interaction", ImGuiTreeNodeFlags_DefaultOpen))
-      {
-        bool interactionDirty = false;
-        bool enabled          = m_simulation.enabled;
-        bool playing          = m_simulation.playing;
-
-        if(ImGui::Checkbox("Enable", &enabled))
-        {
-          m_simulation.enabled = enabled;
-          interactionDirty     = true;
-        }
-        ImGui::SameLine();
-        if(ImGui::Checkbox("Play", &playing))
-        {
-          m_simulation.playing = playing;
-          interactionDirty     = true;
-        }
-
-        const char* motionNames[] = {"Spin", "Orbit", "Oscillate", "Conveyor", "Wave"};
-        if(ImGui::Combo("Motion", &m_simulation.motion, motionNames, IM_ARRAYSIZE(motionNames)))
-        {
-          interactionDirty = true;
-        }
-
-        interactionDirty |= ImGui::DragFloat("Time scale", &m_simulation.timeScale, 0.01f, 0.01f, 20.0f, "%.2f");
-        interactionDirty |= ImGui::DragFloat("Spin deg/s", &m_simulation.spinDegrees, 0.5f, -720.0f, 720.0f, "%.2f");
-        interactionDirty |= ImGui::DragFloat("Linear speed", &m_simulation.linearSpeed, 0.01f, -20.0f, 20.0f, "%.2f");
-        interactionDirty |= ImGui::DragFloat("Amplitude", &m_simulation.amplitude, 0.01f, 0.0f, 10000.0f, "%.3f");
-        interactionDirty |= ImGui::DragFloat("Orbit radius", &m_simulation.orbitRadius, 0.01f, 0.0f, 10000.0f, "%.3f");
-        interactionDirty |= ImGui::DragFloat3("Rotation axis", &m_simulation.rotationAxis.x, 0.01f, -1.0f, 1.0f, "%.2f");
-        interactionDirty |= ImGui::DragFloat3("Move axis", &m_simulation.translationAxis.x, 0.01f, -1.0f, 1.0f, "%.2f");
-
-        if(ImGui::Button("Reset Interaction"))
-        {
-          resetSimulationPose();
-          m_simulation.enabled = false;
-          m_simulation.playing = true;
-        }
-        ImGui::SameLine();
-        if(ImGui::Button("Set Rest Pose"))
-        {
-          captureSimulationBase();
-          m_simulation.time = 0.0f;
-        }
-
-        if(interactionDirty)
-        {
-          m_simulation.target = SIM_TARGET_MODEL;
-          m_simulation.dirty  = true;
-          updateSimulation(0.0f, true);
-        }
-      }
-    }
-  }
-  ImGui::End();
-
   if(ImGui::Begin("Settings"))
   {
     ImGui::PushItemWidth(170 * ImGui::GetWindowDpiScale());
@@ -565,128 +371,6 @@ void LodClusters::onUIRender()
       if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
       PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
       PE::Checkbox("Cluster BBoxes", &m_frameConfig.showClusterBboxes);
-      PE::end();
-    }
-    if(false && ImGui::CollapsingHeader("Simulation & Interaction", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-    {
-      PE::begin("##Simulation", ImGuiTableFlags_Resizable);
-      PE::Checkbox("Enable simulation", &m_simulation.enabled);
-      PE::Checkbox("Play", &m_simulation.playing);
-
-      const char* targetNames[] = {"All instances", "Selected instance", "Geometry group"};
-      PE::entry("Target", [&]() {
-        bool changed = ImGui::Combo("##simtarget", &m_simulation.target, targetNames, IM_ARRAYSIZE(targetNames));
-        if(changed)
-          m_simulation.dirty = true;
-        return changed;
-      });
-
-      const char* motionNames[] = {"Spin", "Orbit", "Oscillate", "Conveyor", "Wave rig"};
-      PE::entry("Motion", [&]() {
-        bool changed = ImGui::Combo("##simmotion", &m_simulation.motion, motionNames, IM_ARRAYSIZE(motionNames));
-        if(changed)
-          m_simulation.dirty = true;
-        return changed;
-      });
-
-      if(m_scene)
-      {
-        int maxInstance = std::max(0, int(m_scene->m_instances.size()) - 1);
-        if(PE::InputIntClamped("Selected instance", &m_simulation.selected, 0, maxInstance, 1, 16,
-                               ImGuiInputTextFlags_EnterReturnsTrue))
-        {
-          m_simulation.selectedGeom = int(m_scene->m_instances[m_simulation.selected].geometryID);
-          m_simulation.dirty = true;
-        }
-        if(PE::InputIntClamped("Geometry id", &m_simulation.selectedGeom, 0,
-                               std::max(0, int(m_scene->getActiveGeometryCount()) - 1), 1, 16,
-                               ImGuiInputTextFlags_EnterReturnsTrue))
-        {
-          m_simulation.dirty = true;
-        }
-        PE::Text("Instances:", "%zu", m_scene->m_instances.size());
-        PE::Text("Pick:", "Middle click or Ctrl+Left click");
-      }
-
-      bool simDirty = false;
-      simDirty |= PE::InputFloat("Time scale", &m_simulation.timeScale, 0.05f, 0.25f, "%.2f",
-                                 ImGuiInputTextFlags_EnterReturnsTrue);
-      simDirty |= PE::InputFloat("Spin deg/s", &m_simulation.spinDegrees, 1.0f, 10.0f, "%.2f",
-                                 ImGuiInputTextFlags_EnterReturnsTrue);
-      simDirty |= PE::InputFloat("Linear speed", &m_simulation.linearSpeed, 0.05f, 0.25f, "%.2f",
-                                 ImGuiInputTextFlags_EnterReturnsTrue);
-      simDirty |= PE::InputFloat("Amplitude", &m_simulation.amplitude, 0.05f, 0.25f, "%.3f",
-                                 ImGuiInputTextFlags_EnterReturnsTrue);
-      simDirty |= PE::InputFloat("Orbit radius", &m_simulation.orbitRadius, 0.05f, 0.25f, "%.3f",
-                                 ImGuiInputTextFlags_EnterReturnsTrue);
-      simDirty |= PE::InputFloat("Phase stride", &m_simulation.phaseStride, 0.05f, 0.25f, "%.3f",
-                                 ImGuiInputTextFlags_EnterReturnsTrue);
-      simDirty |= PE::entry("Rotation axis", [&] {
-        return ImGui::DragFloat3("##rotaxis", &m_simulation.rotationAxis.x, 0.01f, -1.0f, 1.0f, "%.2f");
-      });
-      simDirty |= PE::entry("Translation axis", [&] {
-        return ImGui::DragFloat3("##moveaxis", &m_simulation.translationAxis.x, 0.01f, -1.0f, 1.0f, "%.2f");
-      });
-
-      if(PE::treeNode("Selected transform", ImGuiTreeNodeFlags_DefaultOpen))
-      {
-        simDirty |= PE::entry("Translate", [&] {
-          return ImGui::DragFloat3("##manualtranslate", &m_simulation.manualTranslate.x, 0.01f, -1000.0f, 1000.0f, "%.3f");
-        });
-        simDirty |= PE::entry("Rotate deg", [&] {
-          return ImGui::DragFloat3("##manualrotate", &m_simulation.manualRotateDeg.x, 0.25f, -360.0f, 360.0f, "%.2f");
-        });
-        simDirty |= PE::entry("Scale", [&] {
-          return ImGui::DragFloat3("##manualscale", &m_simulation.manualScale.x, 0.01f, 0.001f, 1000.0f, "%.3f");
-        });
-        PE::treePop();
-      }
-
-      if(PE::treeNode("Model composition"))
-      {
-        bool gridDirty = false;
-        gridDirty |= PE::InputIntClamped("Copies", (int*)&m_sceneGridConfig.numCopies, 1, 65536, 1, 16,
-                                         ImGuiInputTextFlags_EnterReturnsTrue);
-        gridDirty |= PE::InputFloat("X gap", &m_sceneGridConfig.refShift.x, 0.1f, 0.5f, "%.3f",
-                                    ImGuiInputTextFlags_EnterReturnsTrue);
-        gridDirty |= PE::InputFloat("Y gap", &m_sceneGridConfig.refShift.y, 0.1f, 0.5f, "%.3f",
-                                    ImGuiInputTextFlags_EnterReturnsTrue);
-        gridDirty |= PE::InputFloat("Z gap", &m_sceneGridConfig.refShift.z, 0.1f, 0.5f, "%.3f",
-                                    ImGuiInputTextFlags_EnterReturnsTrue);
-        gridDirty |= PE::InputFloat("Min scale", &m_sceneGridConfig.minScale, 0.1f, 0.5f, "%.3f",
-                                    ImGuiInputTextFlags_EnterReturnsTrue);
-        gridDirty |= PE::InputFloat("Max scale", &m_sceneGridConfig.maxScale, 0.1f, 0.5f, "%.3f",
-                                    ImGuiInputTextFlags_EnterReturnsTrue);
-        gridDirty |= PE::InputFloat("Snap angle", &m_sceneGridConfig.snapAngle, 5.0f, 15.0f, "%.3f",
-                                    ImGuiInputTextFlags_EnterReturnsTrue);
-        PE::Checkbox("Unique geometries", &m_sceneGridConfig.uniqueGeometriesForCopies);
-        PE::Text("Axis bits:", "XYZ = bits 0..2, rotation = bits 3..5");
-        PE::InputIntClamped("Grid bits", (int*)&m_sceneGridConfig.gridBits, 0, 63, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-        if(gridDirty)
-          m_simulation.dirty = true;
-        PE::treePop();
-      }
-
-      ImVec2 buttonSize = {110.0f * ImGui::GetWindowDpiScale(), 22.0f * ImGui::GetWindowDpiScale()};
-      if(PE::entry("Pose", [&] { return ImGui::Button("Reset pose", buttonSize); }))
-      {
-        resetSimulationPose();
-      }
-      if(PE::entry("", [&] { return ImGui::Button("Bake rest pose", buttonSize); }))
-      {
-        captureSimulationBase();
-        m_simulation.time            = 0.0f;
-        m_simulation.manualTranslate = glm::vec3(0.0f);
-        m_simulation.manualRotateDeg = glm::vec3(0.0f);
-        m_simulation.manualScale     = glm::vec3(1.0f);
-      }
-
-      if(simDirty)
-      {
-        m_simulation.dirty = true;
-        updateSimulation(0.0f, true);
-      }
       PE::end();
     }
     if(ImGui::CollapsingHeader("Traversal", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
@@ -1338,60 +1022,32 @@ void LodClusters::onUIRender()
 
     if(m_scene && ImGui::CollapsingHeader("Model Cluster Stats"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      static int statsScope = 0;
-      const bool hasSelectedModel =
-          m_selectedModel >= 0 && m_selectedModel < int(m_modelAssets.size()) && m_modelAssets[m_selectedModel].scene;
-      const char* scopes[] = {"Combined scene", "Selected model"};
-      ImGui::BeginDisabled(!hasSelectedModel);
-      ImGui::Combo("Stats scope", &statsScope, scopes, IM_ARRAYSIZE(scopes));
-      ImGui::EndDisabled();
-      if(!hasSelectedModel)
-      {
-        statsScope = 0;
-      }
+      ImGui::Text("Cluster max triangles: %d", m_scene->m_maxClusterTriangles);
+      ImGui::Text("Cluster max vertices: %d", m_scene->m_maxClusterVertices);
+      ImGui::Text("Cluster count: %" PRIu64, m_scene->m_totalClustersCount);
+      ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
+                  m_scene->m_histograms.clusterTriangles[m_scene->m_config.clusterTriangles],
+                  float(m_scene->m_histograms.clusterTriangles[m_scene->m_config.clusterTriangles]) * 100.f
+                      / float(m_scene->m_totalClustersCount));
+      ImGui::Text("Geometry max lod levels: %d", m_scene->m_maxLodLevelsCount);
 
-      const Scene* statsScene = (statsScope == 1 && hasSelectedModel) ? m_modelAssets[m_selectedModel].scene.get() : m_scene.get();
+      uiPlot(std::string("Cluster Triangles Histogram"), std::string("Cluster count with %d triangles: %u"),
+             m_scene->m_histograms.clusterTriangles, m_scene->m_histograms.clusterTrianglesMax, 0,
+             m_scene->m_config.clusterTriangles + 1);
 
-      ImGui::Text("Cluster max triangles: %d", statsScene->m_maxClusterTriangles);
-      ImGui::Text("Cluster max vertices: %d", statsScene->m_maxClusterVertices);
-      ImGui::Text("Cluster count: %" PRIu64, statsScene->m_totalClustersCount);
+      uiPlot(std::string("Cluster Vertices Histogram"), std::string("Cluster count with %d vertices: %u"),
+             m_scene->m_histograms.clusterVertices, m_scene->m_histograms.clusterVerticesMax, 0,
+             m_scene->m_config.clusterVertices + 1);
 
-      uint32_t configuredTriangles = statsScene->m_config.clusterTriangles;
-      uint32_t configuredCount     = configuredTriangles < statsScene->m_histograms.clusterTriangles.size() ?
-                                         statsScene->m_histograms.clusterTriangles[configuredTriangles] :
-                                         0;
-      float configuredPct = statsScene->m_totalClustersCount ?
-                                float(configuredCount) * 100.f / float(statsScene->m_totalClustersCount) :
-                                0.0f;
-      ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", configuredTriangles, configuredCount,
-                  configuredPct);
-      ImGui::Text("Geometry max lod levels: %d", statsScene->m_maxLodLevelsCount);
+      uiPlot(std::string("Group Clusters Histogram"), std::string("Group count with %d clusters: %u"),
+             m_scene->m_histograms.groupClusters, m_scene->m_histograms.groupClustersMax, 0,
+             m_scene->m_config.clusterGroupSize + 1);
 
-      if(statsScene->m_totalClustersCount)
-      {
-        uiPlot(std::string("Cluster Triangles Histogram"), std::string("Cluster count with %d triangles: %u"),
-               statsScene->m_histograms.clusterTriangles, statsScene->m_histograms.clusterTrianglesMax, 0,
-               statsScene->m_config.clusterTriangles + 1);
+      uiPlot(std::string("Node Children Histogram"), std::string("Node count with %d children: %u"),
+             m_scene->m_histograms.nodeChildren, m_scene->m_histograms.nodeChildrenMax);
 
-        uiPlot(std::string("Cluster Vertices Histogram"), std::string("Cluster count with %d vertices: %u"),
-               statsScene->m_histograms.clusterVertices, statsScene->m_histograms.clusterVerticesMax, 0,
-               statsScene->m_config.clusterVertices + 1);
-
-        uiPlot(std::string("Group Clusters Histogram"), std::string("Group count with %d clusters: %u"),
-               statsScene->m_histograms.groupClusters, statsScene->m_histograms.groupClustersMax, 0,
-               statsScene->m_config.clusterGroupSize + 1);
-
-        uiPlot(std::string("Node Children Histogram"), std::string("Node count with %d children: %u"),
-               statsScene->m_histograms.nodeChildren, statsScene->m_histograms.nodeChildrenMax);
-
-        uiPlot(std::string("LOD Levels Histogram"), std::string("Mesh count with %d LOD levels: %u"),
-               statsScene->m_histograms.lodLevels, statsScene->m_histograms.lodLevelsMax, 0,
-               statsScene->m_maxLodLevelsCount + 1);
-      }
-      else
-      {
-        ImGui::TextDisabled("No model cluster data loaded.");
-      }
+      uiPlot(std::string("LOD Levels Histogram"), std::string("Mesh count with %d LOD levels: %u"),
+             m_scene->m_histograms.lodLevels, m_scene->m_histograms.lodLevelsMax, 0, m_scene->m_maxLodLevelsCount + 1);
     }
   }
   ImGui::End();
@@ -1529,41 +1185,20 @@ void LodClusters::onUIRender()
 void LodClusters::onUIMenu()
 {
   bool vsync = m_app->isVsync();
-  bool doImportModel     = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O);
-  bool doOpenProject     = false;
-  bool doSaveProject     = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S);
-  bool doSaveProjectAs   = false;
-  bool doNewProject      = false;
-  bool doSaveCacheFile   = false;
+  bool doOpenFile        = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O);
+  bool doSaveCacheFile   = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S);
   bool doReloadFile      = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_R);
   bool doDeleteCacheFile = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_D);
   bool doCloseApp        = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Q);
   bool doToggleVsync     = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_V);
-  bool hasCache = m_selectedModel >= 0 && m_selectedModel < int(m_modelAssets.size()) && m_modelAssets[m_selectedModel].scene
-                  && std::filesystem::exists(m_modelAssets[m_selectedModel].scene->getCacheFilePath());
+  bool hasCache = m_scene && !m_scene->isMemoryMappedCache() && std::filesystem::exists(m_scene->getCacheFilePath());
 
 
   if(ImGui::BeginMenu("File"))
   {
-    if(ImGui::MenuItem("New Empty Scene"))
+    if(ImGui::MenuItem(ICON_MS_FILE_OPEN "Open", "Ctrl+O"))
     {
-      doNewProject = true;
-    }
-    if(ImGui::MenuItem(ICON_MS_FILE_OPEN "Import Model", "Ctrl+O"))
-    {
-      doImportModel = true;
-    }
-    if(ImGui::MenuItem("Open Scene Project"))
-    {
-      doOpenProject = true;
-    }
-    if(ImGui::MenuItem(ICON_MS_FILE_SAVE "Save Scene Project", "Ctrl+S"))
-    {
-      doSaveProject = true;
-    }
-    if(ImGui::MenuItem("Save Scene Project As"))
-    {
-      doSaveProjectAs = true;
+      doOpenFile = true;
     }
     if(m_scene)
     {
@@ -1572,10 +1207,9 @@ void LodClusters::onUIMenu()
         doReloadFile = true;
       }
 
-      if(m_selectedModel >= 0 && m_selectedModel < int(m_modelAssets.size()) && m_modelAssets[m_selectedModel].scene
-         && !m_modelAssets[m_selectedModel].scene->m_loadedFromCache)
+      if(!m_scene->m_loadedFromCache)
       {
-        if(ImGui::MenuItem("Save Active Cache"))
+        if(ImGui::MenuItem(ICON_MS_FILE_SAVE "Save Cache", "Ctrl+S"))
         {
           doSaveCacheFile = true;
         }
@@ -1617,61 +1251,21 @@ void LodClusters::onUIMenu()
     m_app->setVsync(vsync);
   }
 
-  if(doNewProject)
-  {
-    clearProject();
-  }
-
-  if(doImportModel)
+  if(doOpenFile)
   {
     std::filesystem::path filePath =
-        nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Import model",
-                                    "glTF(.gltf, .glb)|*.gltf;*.glb|All supported|*.gltf;*.glb");
+        nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Load supported",
+                                    "Supported Files|*.gltf;*.glb;*.cfg|glTF(.gltf, .glb)|*.gltf;*.glb|config file(.cfg)|*.cfg");
     if(!filePath.empty())
     {
       onFileDrop(filePath);
     }
   }
 
-  if(doOpenProject)
-  {
-    std::filesystem::path filePath =
-        nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Open Scene Project",
-                                    "LOD Scene Project(.lscene)|*.lscene");
-    if(!filePath.empty())
-    {
-      loadProjectFile(filePath);
-    }
-  }
-
-  if(doSaveProject || doSaveProjectAs)
-  {
-    std::filesystem::path filePath = m_projectFilePath;
-    if(filePath.empty() || doSaveProjectAs)
-    {
-      filePath = nvgui::windowSaveFileDialog(m_app->getWindowHandle(), "Save Scene Project",
-                                             "LOD Scene Project(.lscene)|*.lscene");
-      if(!filePath.empty() && filePath.extension().empty())
-      {
-        filePath.replace_extension(".lscene");
-      }
-    }
-    if(!filePath.empty())
-    {
-      saveProjectFile(filePath);
-    }
-  }
-
   if(m_scene && doReloadFile)
   {
-    if(!m_projectFilePath.empty())
-    {
-      loadProjectFile(m_projectFilePath);
-    }
-    else
-    {
-      rebuildProjectScene(true);
-    }
+    std::filesystem::path filePath = m_sceneFilePathDropLast;
+    onFileDrop(filePath);
   }
 
   if(m_scene)
@@ -1685,7 +1279,7 @@ void LodClusters::onUIMenu()
     {
       try
       {
-        if(std::filesystem::remove(m_modelAssets[m_selectedModel].scene->getCacheFilePath()))
+        if(std::filesystem::remove(m_scene->getCacheFilePath()))
         {
           LOGI("Cache file deleted successfully.\n");
         }

@@ -201,7 +201,6 @@ int main(int argc, char** argv)
     }
     // right side panel container
     ImGuiID settingID = ImGui::DockBuilderSplitNode(viewportID, ImGuiDir_Right, 0.25F, nullptr, &viewportID);
-    ImGui::DockBuilderDockWindow("Scene Hierarchy", settingID);
     ImGui::DockBuilderDockWindow("Settings", settingID);
     ImGui::DockBuilderDockWindow("Misc Settings", settingID);
     // bottom panel container

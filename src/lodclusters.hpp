@@ -118,23 +118,6 @@ public:
     GUI_VISUALIZE,
   };
 
-  enum SimulationTarget
-  {
-    SIM_TARGET_ALL,
-    SIM_TARGET_SELECTED,
-    SIM_TARGET_GEOMETRY,
-    SIM_TARGET_MODEL,
-  };
-
-  enum SimulationMotion
-  {
-    SIM_MOTION_SPIN,
-    SIM_MOTION_ORBIT,
-    SIM_MOTION_OSCILLATE,
-    SIM_MOTION_CONVEYOR,
-    SIM_MOTION_WAVE,
-  };
-
   enum ScreenshotMode
   {
     SCREENSHOT_OFF,
@@ -170,43 +153,6 @@ public:
     VkImage     image;
     VkImageView view;
     VkFormat    format;
-  };
-
-  struct SimulationState
-  {
-    bool enabled       = false;
-    bool playing       = true;
-    bool dirty         = false;
-    int  target        = SIM_TARGET_MODEL;
-    int  motion        = SIM_MOTION_SPIN;
-    int  selected      = 0;
-    int  selectedGeom  = 0;
-    float time         = 0.0f;
-    float timeScale    = 1.0f;
-    float spinDegrees  = 35.0f;
-    float orbitRadius  = 1.0f;
-    float linearSpeed  = 1.0f;
-    float amplitude    = 0.25f;
-    float phaseStride  = 0.35f;
-    glm::vec3 rotationAxis    = glm::vec3(0.0f, 1.0f, 0.0f);
-    glm::vec3 translationAxis = glm::vec3(1.0f, 0.0f, 0.0f);
-    glm::vec3 manualTranslate = glm::vec3(0.0f);
-    glm::vec3 manualRotateDeg = glm::vec3(0.0f);
-    glm::vec3 manualScale     = glm::vec3(1.0f);
-  };
-
-  struct ModelAsset
-  {
-    std::string            name;
-    std::filesystem::path  filePath;
-    std::unique_ptr<Scene> scene;
-    glm::vec3              translate = glm::vec3(0.0f);
-    glm::vec3              rotateDeg = glm::vec3(0.0f);
-    glm::vec3              scale     = glm::vec3(1.0f);
-    bool                   visible   = true;
-    uint32_t               compositeGeometryOffset = 0;
-    uint32_t               compositeInstanceOffset = 0;
-    uint32_t               compositeInstanceCount  = 0;
   };
 
   struct Info
@@ -299,13 +245,6 @@ private:
   std::unique_ptr<RenderScene> m_renderScene;
   bool                         m_renderSceneCanPreload = false;
 
-  std::vector<ModelAsset> m_modelAssets;
-  int                     m_selectedModel = -1;
-  std::filesystem::path   m_projectFilePath;
-
-  SimulationState      m_simulation;
-  std::vector<glm::mat4> m_simulationBaseMatrices;
-
   StreamingConfig m_streamingConfig;
   StreamingConfig m_streamingConfigLast;
 
@@ -344,15 +283,6 @@ private:
   // } m_pickedInfo;
   // use by-value copies for flexibility
   void initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange);
-  bool addModelToProject(const std::filesystem::path& filePath);
-  void clearProject();
-  void rebuildProjectScene(bool resetCamera);
-  void updateModelTransform(int modelIndex);
-  bool saveProjectFile(const std::filesystem::path& filePath);
-  bool loadProjectFile(const std::filesystem::path& filePath);
-  glm::mat4 getModelMatrix(const ModelAsset& model) const;
-  int       findModelIndexForInstance(uint32_t instanceId) const;
-  glm::vec3 getModelCenter(int modelIndex) const;
 
   void setSceneCamera(const std::filesystem::path& filePath);
   void saveCacheFile();
@@ -373,11 +303,6 @@ private:
 
   void handleChanges();
   void applyCameraString();
-  void captureSimulationBase();
-  void resetSimulationPose();
-  void updateSimulation(float deltaTime, bool forceUpdate = false);
-  void uploadSimulationPose();
-  void uploadSimulationPoseRange(uint32_t firstInstance, uint32_t instanceCount);
   void resetSwRasterFeedback();
   void updateSwRasterFeedback();
 
