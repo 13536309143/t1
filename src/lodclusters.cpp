@@ -49,11 +49,11 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"meshoptfillweight"}, &m_sceneConfig.meshoptFillWeight);
   /////////////////////////////////////////////
   //开启lod优化
-  m_info.parameterRegistry->add({ "curvatureadaptive" }, &m_sceneConfig.curvatureAdaptiveStrength);
-  m_info.parameterRegistry->add({ "curvaturewindow" }, &m_sceneConfig.curvatureWindowRadius);
-  m_info.parameterRegistry->add({ "featureedge" }, &m_sceneConfig.featureEdgeThreshold);
-  m_info.parameterRegistry->add({ "perceptualweight" }, &m_sceneConfig.perceptualWeight);
-  m_info.parameterRegistry->add({ "silhouettepreserve" }, &m_sceneConfig.silhouettePreservation);
+  // m_info.parameterRegistry->add({ "curvatureadaptive" }, &m_sceneConfig.curvatureAdaptiveStrength);
+  // m_info.parameterRegistry->add({ "curvaturewindow" }, &m_sceneConfig.curvatureWindowRadius);
+  // m_info.parameterRegistry->add({ "featureedge" }, &m_sceneConfig.featureEdgeThreshold);
+  // m_info.parameterRegistry->add({ "perceptualweight" }, &m_sceneConfig.perceptualWeight);
+  // m_info.parameterRegistry->add({ "silhouettepreserve" }, &m_sceneConfig.silhouettePreservation);
   ////////////////////////////////////////////////////
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"shadowray"}, &m_frameConfig.frameConstants.doShadow);
@@ -533,8 +533,8 @@ void LodClusters::onAttach(nvapp::Application* app)
         std::filesystem::absolute(exeDirectoryPath / "resources"),
     };
 
-    m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
-    // m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("a.glb", defaultSearchPaths);
+    // m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
+    m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("a.glb", defaultSearchPaths);
     //m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("b.glb", defaultSearchPaths);
     //m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("c.glb", defaultSearchPaths);
     //m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("12.glb", defaultSearchPaths);
