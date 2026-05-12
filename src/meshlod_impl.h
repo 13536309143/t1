@@ -18,6 +18,7 @@ struct Cluster
 	std::vector<unsigned int> indices;
 	int group;
 	int refined;
+	float feature_importance = 0.f;
 	clodBounds bounds;
 };
 
@@ -25,6 +26,16 @@ struct SloppyVertex
 {
 	float x, y, z;
 	unsigned int id;
+};
+
+struct IndustrialFeatureStats
+{
+	float importance = 0.f;
+	float boundary = 0.f;
+	float sharp = 0.f;
+	float thin = 0.f;
+	float normal_variation = 0.f;
+	size_t unique_vertices = 0;
 };
 
 struct IterationContext
@@ -49,8 +60,7 @@ clodBounds boundsMerge(const std::vector<Cluster>& clusters, const std::vector<i
 std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, const unsigned int* indices, size_t index_count);
 std::vector<std::vector<int> > partition(const clodConfig& config, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& pending, const std::vector<unsigned int>& remap);
 void lockBoundary(std::vector<unsigned char>& locks, const std::vector<std::vector<int> >& groups, const std::vector<Cluster>& clusters, const std::vector<unsigned int>& remap, const unsigned char* vertex_lock);
-float computeVertexCurvature(const float* positions, size_t stride, const unsigned int* indices, size_t index_count, unsigned int vertex, float radius);
-void computeFeatureWeights(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, std::vector<float>& feature_weights, std::vector<unsigned char>& enhanced_locks);
+IndustrialFeatureStats computeIndustrialFeatureStats(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices);
 float perceptualError(float geometric_error, float vertex_count, float original_count);
 void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error);
 std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error);

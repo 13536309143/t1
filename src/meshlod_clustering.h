@@ -38,6 +38,7 @@ std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, 
 			clusters[i].indices[j] = meshlet_vertices[meshlet.vertex_offset + meshlet_triangles[meshlet.triangle_offset + j]];
 		clusters[i].group = -1;
 		clusters[i].refined = -1;
+		clusters[i].feature_importance = computeIndustrialFeatureStats(config, mesh, clusters[i].indices).importance;
 	}
 
 	return clusters;
@@ -83,6 +84,16 @@ std::vector<std::vector<int> > partition(const clodConfig& config, const clodMes
 
 	for (size_t i = 0; i < pending.size(); ++i)
 		partitions[partition_remap.empty() ? cluster_part[i] : partition_remap[cluster_part[i]]].push_back(pending[i]);
+
+	if (config.industrial_feature_preservation)
+	{
+		for (std::vector<int>& group : partitions)
+		{
+			std::stable_sort(group.begin(), group.end(), [&](int lhs, int rhs) {
+				return clusters[lhs].feature_importance > clusters[rhs].feature_importance;
+			});
+		}
+	}
 
 	return partitions;
 }

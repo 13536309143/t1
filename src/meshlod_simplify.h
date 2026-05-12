@@ -4,116 +4,188 @@
 namespace clod
 {
 
-float computeVertexCurvature(const float* positions, size_t stride, const unsigned int* indices, size_t index_count, unsigned int vertex, float radius)
+namespace detail
 {
-	float pos[3] = {positions[vertex * stride + 0], positions[vertex * stride + 1], positions[vertex * stride + 2]};
-	float mean_normal[3] = {0.f, 0.f, 0.f};
-	int count = 0;
-	float r2 = radius * radius;
 
-	for (size_t i = 0; i < index_count; i += 3)
-	{
-		unsigned int v0 = indices[i], v1 = indices[i + 1], v2 = indices[i + 2];
-		if (v0 != vertex && v1 != vertex && v2 != vertex)
-			continue;
-		float p[3][3];
-		for (int j = 0; j < 3; ++j)
-		{
-			unsigned int vi = (j == 0) ? v0 : (j == 1) ? v1 : v2;
-			p[j][0] = positions[vi * stride + 0] - pos[0];
-			p[j][1] = positions[vi * stride + 1] - pos[1];
-			p[j][2] = positions[vi * stride + 2] - pos[2];
-		}
-		float edge1[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
-		float edge2[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
-		float normal[3] = {edge1[1] * edge2[2] - edge1[2] * edge2[1],
-			edge1[2] * edge2[0] - edge1[0] * edge2[2],
-			edge1[0] * edge2[1] - edge1[1] * edge2[0]};
-		float len = sqrtf(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
-		if (len > 1e-8f)
-		{
-			mean_normal[0] += normal[0] / len;
-			mean_normal[1] += normal[1] / len;
-			mean_normal[2] += normal[2] / len;
-			++count;
-		}
-	}
-	if (count == 0)
-		return 0.f;
-	float nlen = sqrtf(mean_normal[0] * mean_normal[0] + mean_normal[1] * mean_normal[1] + mean_normal[2] * mean_normal[2]);
-	if (nlen < 1e-8f)
-		return 0.f;
-	mean_normal[0] /= nlen;
-	mean_normal[1] /= nlen;
-	mean_normal[2] /= nlen;
+struct FaceInfo
+{
+	float normal[3] = {};
+	float min_edge = 0.f;
+	float max_edge = 0.f;
+};
 
-	float variance = 0.f;
-	for (size_t i = 0; i < index_count; i += 3)
-	{
-		unsigned int v0 = indices[i], v1 = indices[i + 1], v2 = indices[i + 2];
-		if (v0 != vertex && v1 != vertex && v2 != vertex)
-			continue;
-		for (int j = 0; j < 3; ++j)
-		{
-			unsigned int vi = (j == 0) ? v0 : (j == 1) ? v1 : v2;
-			float vp[3] = {positions[vi * stride + 0] - pos[0], positions[vi * stride + 1] - pos[1], positions[vi * stride + 2] - pos[2]};
-			float dist2 = vp[0] * vp[0] + vp[1] * vp[1] + vp[2] * vp[2];
-			if (dist2 <= r2)
-			{
-				float proj = vp[0] * mean_normal[0] + vp[1] * mean_normal[1] + vp[2] * mean_normal[2];
-				variance += (dist2 - proj * proj);
-			}
-		}
-	}
-	return variance / float(count > 0 ? count : 1);
+struct EdgeUse
+{
+	unsigned int a = 0;
+	unsigned int b = 0;
+	unsigned int face = 0;
+};
+
+inline float clamp01(float v)
+{
+	return std::max(0.f, std::min(1.f, v));
 }
 
-void computeFeatureWeights(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, std::vector<float>& feature_weights, std::vector<unsigned char>& enhanced_locks)
+inline float dot3(const float* a, const float* b)
 {
-	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
-	float radius = config.curvature_window_radius > 0 ? config.curvature_window_radius : 1.0f;
-	float edge_thresh = config.feature_edge_threshold > 0 ? config.feature_edge_threshold : 0.5f;
+	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
 
-	for (size_t i = 0; i < mesh.vertex_count; ++i)
-		feature_weights[i] = 1.0f;
+inline float length3(const float* v)
+{
+	return sqrtf(dot3(v, v));
+}
 
-	for (size_t i = 0; i < indices.size(); i += 3)
+inline float distance3(const float* a, const float* b)
+{
+	float d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+	return length3(d);
+}
+
+}  // namespace detail
+
+IndustrialFeatureStats computeIndustrialFeatureStats(const clodConfig& config,
+                                                     const clodMesh&   mesh,
+                                                     const std::vector<unsigned int>& indices)
+{
+	IndustrialFeatureStats stats = {};
+	if(!config.industrial_feature_preservation || indices.size() < 3)
+		return stats;
+
+	const size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
+	const size_t triangle_count   = indices.size() / 3;
+
+	std::vector<detail::FaceInfo> faces(triangle_count);
+	std::vector<detail::EdgeUse>  edges;
+	edges.reserve(triangle_count * 3);
+
+	std::vector<unsigned int> unique_vertices = indices;
+	std::sort(unique_vertices.begin(), unique_vertices.end());
+	unique_vertices.erase(std::unique(unique_vertices.begin(), unique_vertices.end()), unique_vertices.end());
+	stats.unique_vertices = unique_vertices.size();
+
+	float normal_sum[3] = {};
+	size_t valid_faces = 0;
+
+	for(size_t t = 0; t < triangle_count; ++t)
 	{
-		unsigned int a = indices[i], b = indices[i + 1], c = indices[i + 2];
-		float pa[3] = {mesh.vertex_positions[a * positions_stride + 0], mesh.vertex_positions[a * positions_stride + 1], mesh.vertex_positions[a * positions_stride + 2]};
-		float pb[3] = {mesh.vertex_positions[b * positions_stride + 0], mesh.vertex_positions[b * positions_stride + 1], mesh.vertex_positions[b * positions_stride + 2]};
-		float pc[3] = {mesh.vertex_positions[c * positions_stride + 0], mesh.vertex_positions[c * positions_stride + 1], mesh.vertex_positions[c * positions_stride + 2]};
+		const unsigned int ia = indices[t * 3 + 0];
+		const unsigned int ib = indices[t * 3 + 1];
+		const unsigned int ic = indices[t * 3 + 2];
 
-		float eab = (pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) + (pa[2] - pb[2]) * (pa[2] - pb[2]);
-		float eac = (pa[0] - pc[0]) * (pa[0] - pc[0]) + (pa[1] - pc[1]) * (pa[1] - pc[1]) + (pa[2] - pc[2]) * (pa[2] - pc[2]);
-		float ebc = (pb[0] - pc[0]) * (pb[0] - pc[0]) + (pb[1] - pc[1]) * (pb[1] - pc[1]) + (pb[2] - pc[2]) * (pb[2] - pc[2]);
+		const float* a = &mesh.vertex_positions[ia * positions_stride];
+		const float* b = &mesh.vertex_positions[ib * positions_stride];
+		const float* c = &mesh.vertex_positions[ic * positions_stride];
 
-		if (eab > edge_thresh * edge_thresh)
+		float ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+		float ac[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+		float n[3]  = {ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2],
+                     ab[0] * ac[1] - ab[1] * ac[0]};
+		float nlen = detail::length3(n);
+		if(nlen > 1e-12f)
 		{
-			feature_weights[a] += config.curvature_adaptive_strength;
-			feature_weights[b] += config.curvature_adaptive_strength;
+			faces[t].normal[0] = n[0] / nlen;
+			faces[t].normal[1] = n[1] / nlen;
+			faces[t].normal[2] = n[2] / nlen;
+			normal_sum[0] += faces[t].normal[0];
+			normal_sum[1] += faces[t].normal[1];
+			normal_sum[2] += faces[t].normal[2];
+			valid_faces++;
 		}
-		if (eac > edge_thresh * edge_thresh)
+
+		const float eab = detail::distance3(a, b);
+		const float ebc = detail::distance3(b, c);
+		const float eca = detail::distance3(c, a);
+		faces[t].min_edge = std::min(eab, std::min(ebc, eca));
+		faces[t].max_edge = std::max(eab, std::max(ebc, eca));
+		if(faces[t].max_edge > 1e-12f && faces[t].min_edge / faces[t].max_edge < 0.08f)
+			stats.thin += 1.f;
+
+		unsigned int tri[3] = {ia, ib, ic};
+		for(int e = 0; e < 3; ++e)
 		{
-			feature_weights[a] += config.curvature_adaptive_strength;
-			feature_weights[c] += config.curvature_adaptive_strength;
-		}
-		if (ebc > edge_thresh * edge_thresh)
-		{
-			feature_weights[b] += config.curvature_adaptive_strength;
-			feature_weights[c] += config.curvature_adaptive_strength;
+			unsigned int x = tri[e];
+			unsigned int y = tri[(e + 1) % 3];
+			if(x > y)
+				std::swap(x, y);
+			edges.push_back({x, y, unsigned(t)});
 		}
 	}
 
-	for (size_t i = 0; i < mesh.vertex_count; ++i)
+	if(valid_faces)
 	{
-		float curvature = computeVertexCurvature(mesh.vertex_positions, positions_stride, indices.data(), indices.size(), (unsigned int)i, radius);
-		if (curvature > edge_thresh)
-		{
-			feature_weights[i] += curvature * config.curvature_adaptive_strength;
-			enhanced_locks[i] |= meshopt_SimplifyVertex_Protect;
-		}
+		const float mean_len = detail::length3(normal_sum) / float(valid_faces);
+		stats.normal_variation = detail::clamp01(1.f - mean_len);
 	}
+	stats.thin = triangle_count ? detail::clamp01(stats.thin / float(triangle_count)) : 0.f;
+
+	std::sort(edges.begin(), edges.end(), [](const detail::EdgeUse& lhs, const detail::EdgeUse& rhs) {
+		return lhs.a == rhs.a ? lhs.b < rhs.b : lhs.a < rhs.a;
+	});
+
+	std::vector<unsigned int> feature_vertices;
+	feature_vertices.reserve(edges.size());
+
+	const float sharp_dot_threshold = detail::clamp01(config.feature_edge_threshold > 0.f ? config.feature_edge_threshold : 0.5f);
+	size_t edge_count = 0;
+	for(size_t i = 0; i < edges.size();)
+	{
+		size_t j = i + 1;
+		while(j < edges.size() && edges[j].a == edges[i].a && edges[j].b == edges[i].b)
+			j++;
+
+		const size_t uses = j - i;
+		edge_count++;
+
+		bool structural = false;
+		if(uses != 2)
+		{
+			stats.boundary += 1.f;
+			structural = true;
+		}
+		else
+		{
+			const detail::FaceInfo& f0 = faces[edges[i].face];
+			const detail::FaceInfo& f1 = faces[edges[i + 1].face];
+			const float normal_dot = fabsf(detail::dot3(f0.normal, f1.normal));
+			if(normal_dot < sharp_dot_threshold)
+			{
+				stats.sharp += 1.f;
+				structural = true;
+			}
+		}
+
+		if(structural)
+		{
+			feature_vertices.push_back(edges[i].a);
+			feature_vertices.push_back(edges[i].b);
+		}
+
+		i = j;
+	}
+
+	if(edge_count)
+	{
+		stats.boundary = detail::clamp01(stats.boundary / float(edge_count));
+		stats.sharp    = detail::clamp01(stats.sharp / float(edge_count));
+	}
+
+	float feature_vertex_ratio = 0.f;
+	if(!feature_vertices.empty() && stats.unique_vertices)
+	{
+		std::sort(feature_vertices.begin(), feature_vertices.end());
+		feature_vertices.erase(std::unique(feature_vertices.begin(), feature_vertices.end()), feature_vertices.end());
+		feature_vertex_ratio = float(feature_vertices.size()) / float(stats.unique_vertices);
+	}
+
+	const float curvature_strength = std::max(config.curvature_adaptive_strength, 0.f);
+	const float silhouette_strength = std::max(config.silhouette_preservation, 0.f);
+
+	stats.importance = detail::clamp01(feature_vertex_ratio * 0.45f + stats.boundary * 0.25f
+	                                   + stats.sharp * (0.35f + 0.25f * curvature_strength)
+	                                   + stats.thin * (0.20f + 0.30f * silhouette_strength)
+	                                   + stats.normal_variation * 0.20f);
+	return stats;
 }
 
 float perceptualError(float geometric_error, float vertex_count, float original_count)
@@ -121,13 +193,18 @@ float perceptualError(float geometric_error, float vertex_count, float original_
 	return geometric_error * powf(vertex_count / (original_count > 0 ? original_count : 1), 0.3f);
 }
 
-void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error)
+void simplifyFallback(std::vector<unsigned int>& lod,
+                      const clodMesh&           mesh,
+                      const std::vector<unsigned int>& indices,
+                      const std::vector<unsigned char>& locks,
+                      size_t                    target_count,
+                      float*                    error)
 {
 	std::vector<SloppyVertex> subset(indices.size());
 	std::vector<unsigned char> subset_locks(indices.size());
 	lod.resize(indices.size());
 	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
-	for (size_t i = 0; i < indices.size(); ++i)
+	for(size_t i = 0; i < indices.size(); ++i)
 	{
 		unsigned int v = indices[i];
 		subset[i].x = mesh.vertex_positions[v * positions_stride + 0];
@@ -139,83 +216,67 @@ void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, cons
 		lod[i] = unsigned(i);
 	}
 
-	lod.resize(meshopt_simplifySloppy(&lod[0], &lod[0], lod.size(), &subset[0].x, subset.size(), sizeof(SloppyVertex), subset_locks.data(), target_count, FLT_MAX, error));
+	lod.resize(meshopt_simplifySloppy(&lod[0], &lod[0], lod.size(), &subset[0].x, subset.size(), sizeof(SloppyVertex),
+	                                  subset_locks.data(), target_count, FLT_MAX, error));
 	*error *= meshopt_simplifyScale(&subset[0].x, subset.size(), sizeof(SloppyVertex));
 
-	for (size_t i = 0; i < lod.size(); ++i)
+	for(size_t i = 0; i < lod.size(); ++i)
 		lod[i] = subset[lod[i]].id;
 }
 
-std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error)
+std::vector<unsigned int> simplify(const clodConfig& config,
+                                   const clodMesh&   mesh,
+                                   const std::vector<unsigned int>& indices,
+                                   const std::vector<unsigned char>& locks,
+                                   size_t            target_count,
+                                   float*            error)
 {
-	if (target_count > indices.size())
+	if(target_count > indices.size())
 		return indices;
 
 	size_t original_count = indices.size();
 	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
 
-	std::vector<float> feature_weights(mesh.vertex_count, 1.0f);
-	std::vector<unsigned char> enhanced_locks(locks);
-	if (config.curvature_adaptive_strength > 0 || config.feature_edge_threshold > 0)
+	const IndustrialFeatureStats feature_stats = computeIndustrialFeatureStats(config, mesh, indices);
+	float effective_ratio = config.simplify_ratio;
+	if(config.industrial_feature_preservation && feature_stats.importance > 0.f)
 	{
-		computeFeatureWeights(config, mesh, indices, feature_weights, enhanced_locks);
+		const float preserve = detail::clamp01(config.silhouette_preservation + config.curvature_adaptive_strength);
+		effective_ratio = std::min(0.95f, config.simplify_ratio + (1.f - config.simplify_ratio) * feature_stats.importance * preserve);
 	}
 
-	float adaptive_ratio = config.simplify_ratio;
-	if (config.curvature_adaptive_strength > 0)
-	{
-		float avg_curvature = 0.f;
-		float max_curvature = 0.f;
-		float sample_count = 0.f;
-		size_t step = std::max(size_t(1), indices.size() / (3 * 64));
-		for (size_t i = 0; i < indices.size(); i += 3 * step)
-		{
-			for (int j = 0; j < 3; ++j)
-			{
-				unsigned int v = indices[i + j];
-				float curvature = computeVertexCurvature(mesh.vertex_positions, positions_stride, indices.data(), indices.size(), v, config.curvature_window_radius > 0 ? config.curvature_window_radius : 1.0f);
-				avg_curvature += curvature;
-				max_curvature = std::max(max_curvature, curvature);
-				sample_count += 1.f;
-			}
-		}
-		if (sample_count > 0)
-		{
-			avg_curvature /= sample_count;
-			float curvature_factor = max_curvature > 1e-6f ? (1.0f - config.curvature_adaptive_strength * (avg_curvature / max_curvature)) : 1.0f;
-			adaptive_ratio = std::max(0.1f, config.simplify_ratio * curvature_factor);
-		}
-	}
-
-	size_t adaptive_target = size_t((indices.size() / 3) * adaptive_ratio) * 3;
-	adaptive_target = std::min(adaptive_target, target_count);
+	size_t adaptive_target = size_t((indices.size() / 3) * effective_ratio) * 3;
+	adaptive_target = std::max(adaptive_target, target_count);
+	adaptive_target = std::min(adaptive_target, indices.size());
 
 	std::vector<unsigned int> lod(indices.size());
-	unsigned int options = meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute | (config.simplify_permissive ? meshopt_SimplifyPermissive : 0) | (config.simplify_regularize ? meshopt_SimplifyRegularize : 0);
+	unsigned int options = meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute
+	                       | (config.simplify_permissive ? meshopt_SimplifyPermissive : 0)
+	                       | (config.simplify_regularize ? meshopt_SimplifyRegularize : 0);
 
 	lod.resize(meshopt_simplifyWithAttributes(&lod[0], &indices[0], indices.size(),
 		mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride,
 		mesh.vertex_attributes, mesh.vertex_attributes_stride, mesh.attribute_weights, mesh.attribute_count,
-		&enhanced_locks[0], adaptive_target, FLT_MAX, options, error));
+		locks.data(), adaptive_target, FLT_MAX, options, error));
 
-	if (lod.size() > adaptive_target && config.simplify_fallback_permissive && !config.simplify_permissive)
+	if(lod.size() > adaptive_target && config.simplify_fallback_permissive && !config.simplify_permissive)
 	{
 		lod.resize(meshopt_simplifyWithAttributes(&lod[0], &indices[0], indices.size(),
 			mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride,
 			mesh.vertex_attributes, mesh.vertex_attributes_stride, mesh.attribute_weights, mesh.attribute_count,
-			&enhanced_locks[0], adaptive_target, FLT_MAX, options | meshopt_SimplifyPermissive, error));
+			locks.data(), adaptive_target, FLT_MAX, options | meshopt_SimplifyPermissive, error));
 	}
 
-	if (lod.size() > adaptive_target && config.simplify_fallback_sloppy)
+	if(lod.size() > adaptive_target && config.simplify_fallback_sloppy)
 	{
-		simplifyFallback(lod, mesh, indices, enhanced_locks, adaptive_target, error);
+		simplifyFallback(lod, mesh, indices, locks, adaptive_target, error);
 		*error *= config.simplify_error_factor_sloppy;
 	}
 
-	if (config.simplify_error_edge_limit > 0)
+	if(config.simplify_error_edge_limit > 0)
 	{
 		float max_edge_sq = 0;
-		for (size_t i = 0; i < indices.size(); i += 3)
+		for(size_t i = 0; i < indices.size(); i += 3)
 		{
 			unsigned int a = indices[i + 0], b = indices[i + 1], c = indices[i + 2];
 
@@ -233,22 +294,22 @@ std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mes
 		*error = std::min(*error, sqrtf(max_edge_sq) * config.simplify_error_edge_limit);
 	}
 
-	if (config.perceptual_weight > 0 && error != nullptr)
+	if(config.perceptual_weight > 0 && error != nullptr)
 	{
-		float unique_vertices = 0.f;
-		std::vector<char> vertex_used(mesh.vertex_count, 0);
-		for (size_t i = 0; i < lod.size(); ++i)
-		{
-			if (!vertex_used[lod[i]])
-			{
-				vertex_used[lod[i]] = 1;
-				unique_vertices += 1.f;
-			}
-		}
-		*error = perceptualError(*error, unique_vertices, (float)mesh.vertex_count) * config.perceptual_weight + *error * (1.f - config.perceptual_weight);
+		std::vector<unsigned int> used = lod;
+		std::sort(used.begin(), used.end());
+		used.erase(std::unique(used.begin(), used.end()), used.end());
+		*error = perceptualError(*error, float(used.size()), float(mesh.vertex_count)) * config.perceptual_weight
+		         + *error * (1.f - config.perceptual_weight);
+	}
+
+	if(config.industrial_feature_preservation && error != nullptr)
+	{
+		const float feature_error_scale = 1.f + feature_stats.importance * (0.75f + 1.25f * std::max(config.silhouette_preservation, 0.f));
+		*error *= feature_error_scale;
 	}
 
 	return lod;
 }
 
-}
+}  // namespace clod

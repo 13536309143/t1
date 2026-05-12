@@ -1,8 +1,8 @@
 #pragma once
 #include "meshlod_impl.h"
 #include "meshlod_bounds.h"
-#include "meshlod_clustering.h"
 #include "meshlod_simplify.h"
+#include "meshlod_clustering.h"
 
 namespace clod
 {
@@ -58,6 +58,7 @@ clodConfig clodDefaultConfig(size_t max_triangles)
 	config.feature_edge_threshold = 0.5f;
 	config.perceptual_weight = 0.15f;
 	config.silhouette_preservation = 0.2f;
+	config.industrial_feature_preservation = true;
 
 	return config;
 }
@@ -112,6 +113,7 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 		cluster.refined = refined;
 
 		cluster.bounds = bounds;
+		cluster.feature_importance = std::max(cluster.feature_importance, computeIndustrialFeatureStats(config, mesh, cluster.indices).importance);
 
 		assert(pending_index < context.pending.size());
 		assert(cluster_index < context.clusters.size());
