@@ -86,13 +86,36 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 
 	float error = 0.f;
 
-	std::vector<unsigned int> simplified = simplify(config, mesh, merged, locks, target_size, &error);
+	std::vector<unsigned int> simplified = simplify(config, mesh, merged, locks, context.feature_importance, target_size, &error);
 
 	if (simplified.size() > merged.size() * config.simplify_threshold)
 	{
-		bounds.error = FLT_MAX;
-		outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context, context.output_callback, i, thread_index);
-		return;
+		clodConfig fallback_config = config;
+		fallback_config.curvature_adaptive_strength = 0.f;
+		fallback_config.silhouette_preservation = 0.f;
+		fallback_config.perceptual_weight = 0.f;
+
+		static const std::vector<float> no_features;
+		float fallback_error = 0.f;
+		std::vector<unsigned int> fallback = simplify(fallback_config, mesh, merged, locks, no_features, target_size, &fallback_error);
+
+		if (fallback.size() > merged.size() * config.simplify_threshold)
+		{
+			std::vector<unsigned char> unlocked(mesh.vertex_count, 0);
+			size_t coverage_target = std::max<size_t>(3, target_size);
+			simplifyFallback(fallback, mesh, merged, unlocked, coverage_target, &fallback_error);
+			fallback_error *= config.simplify_error_factor_sloppy * 4.f;
+
+			if (fallback.empty())
+			{
+				bounds.error = FLT_MAX;
+				outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context, context.output_callback, i, thread_index);
+				return;
+			}
+		}
+
+		simplified = std::move(fallback);
+		error = std::max(error, fallback_error) * 1.25f;
 	}
 
 	bounds.error = std::max(bounds.error * config.simplify_error_merge_previous, error) + error * config.simplify_error_merge_additive;
@@ -102,7 +125,7 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 	for (size_t j = 0; j < groups[i].size(); ++j)
 		clusters[groups[i][j]].indices = std::vector<unsigned int>();
 
-	std::vector<Cluster> split = clusterize(config, mesh, simplified.data(), simplified.size());
+	std::vector<Cluster> split = clusterize(config, mesh, simplified.data(), simplified.size(), &context.feature_importance);
 
 	size_t cluster_index = context.next_cluster.fetch_add(split.size());
 	size_t pending_index = context.next_pending.fetch_add(split.size());
@@ -137,6 +160,7 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 	context.remap.resize(mesh.vertex_count);
 
 	meshopt_generatePositionRemap(&context.remap[0], mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride);
+	context.feature_importance = computeFeatureImportance(config, mesh, context.remap);
 
 	if (mesh.attribute_protect_mask)
 	{
@@ -151,7 +175,7 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 		}
 	}
 
-	context.clusters = clusterize(config, mesh, mesh.indices, mesh.index_count);
+	context.clusters = clusterize(config, mesh, mesh.indices, mesh.index_count, &context.feature_importance);
 	context.next_cluster = context.clusters.size();
 
 	for (Cluster& cluster : context.clusters)

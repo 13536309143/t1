@@ -4,7 +4,36 @@
 namespace clod
 {
 
-std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, const unsigned int* indices, size_t index_count)
+static float clusterFeatureImportance(const std::vector<unsigned int>& indices, const std::vector<float>* feature_importance)
+{
+	if (!feature_importance || feature_importance->empty())
+		return 0.f;
+
+	float sum = 0.f;
+	float max_feature = 0.f;
+	float strong_count = 0.f;
+	size_t count = 0;
+
+	for (size_t i = 0; i < indices.size(); ++i)
+	{
+		unsigned int v = indices[i];
+		if (v < feature_importance->size())
+		{
+			float f = (*feature_importance)[v];
+			sum += f;
+			max_feature = std::max(max_feature, f);
+			if (f > 0.65f)
+				strong_count += 1.f;
+			count++;
+		}
+	}
+
+	float avg = count ? sum / float(count) : 0.f;
+	float strong_ratio = count ? strong_count / float(count) : 0.f;
+	return std::min(1.f, avg * 0.5f + max_feature * 0.3f + strong_ratio * 0.2f);
+}
+
+std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, const unsigned int* indices, size_t index_count, const std::vector<float>* feature_importance)
 {
 	size_t max_meshlets = meshopt_buildMeshletsBound(index_count, config.max_vertices, config.min_triangles);
 	std::vector<meshopt_Meshlet> meshlets(max_meshlets);
@@ -38,6 +67,7 @@ std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, 
 			clusters[i].indices[j] = meshlet_vertices[meshlet.vertex_offset + meshlet_triangles[meshlet.triangle_offset + j]];
 		clusters[i].group = -1;
 		clusters[i].refined = -1;
+		clusters[i].feature_importance = clusterFeatureImportance(clusters[i].indices, feature_importance);
 	}
 
 	return clusters;
@@ -84,7 +114,47 @@ std::vector<std::vector<int> > partition(const clodConfig& config, const clodMes
 	for (size_t i = 0; i < pending.size(); ++i)
 		partitions[partition_remap.empty() ? cluster_part[i] : partition_remap[cluster_part[i]]].push_back(pending[i]);
 
-	return partitions;
+	if (config.curvature_adaptive_strength <= 0.f && config.silhouette_preservation <= 0.f)
+		return partitions;
+
+	std::vector<std::vector<int> > feature_partitions;
+	feature_partitions.reserve(partitions.size());
+
+	for (size_t i = 0; i < partitions.size(); ++i)
+	{
+		const std::vector<int>& part = partitions[i];
+		float max_feature = 0.f;
+		float avg_feature = 0.f;
+		float strong_feature_count = 0.f;
+
+		for (size_t j = 0; j < part.size(); ++j)
+		{
+			float feature = clusters[part[j]].feature_importance;
+			avg_feature += feature;
+			max_feature = std::max(max_feature, feature);
+			if (feature > 0.65f)
+				strong_feature_count += 1.f;
+		}
+
+		avg_feature = part.empty() ? 0.f : avg_feature / float(part.size());
+		float strong_ratio = part.empty() ? 0.f : strong_feature_count / float(part.size());
+		float feature_pressure = std::min(1.f, avg_feature * 0.45f + max_feature * 0.35f + strong_ratio * 0.2f);
+		size_t feature_limit = config.partition_size;
+
+		if (feature_pressure > 0.35f)
+		{
+			float strength = std::min(1.f, config.curvature_adaptive_strength + config.silhouette_preservation);
+			feature_limit = std::max<size_t>(4, size_t(float(config.partition_size) * (1.f - 0.45f * strength * feature_pressure)));
+		}
+
+		for (size_t begin = 0; begin < part.size(); begin += feature_limit)
+		{
+			size_t end = std::min(begin + feature_limit, part.size());
+			feature_partitions.emplace_back(part.begin() + begin, part.begin() + end);
+		}
+	}
+
+	return feature_partitions;
 }
 
 void lockBoundary(std::vector<unsigned char>& locks, const std::vector<std::vector<int> >& groups, const std::vector<Cluster>& clusters, const std::vector<unsigned int>& remap, const unsigned char* vertex_lock)

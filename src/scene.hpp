@@ -58,7 +58,7 @@ struct SceneConfig
 
   ////////////////////////////////////////////////
   // 开启lod优化
-  // curvature-adaptive simplification parameters
+  // feature-aware simplification parameters for CAD/industrial models
   float curvatureAdaptiveStrength = 0.3f;
   float curvatureWindowRadius = 0.5f;
   float featureEdgeThreshold = 0.5f;

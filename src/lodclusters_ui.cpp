@@ -688,13 +688,13 @@ void LodClusters::onUIRender()
        PE::treePop();
       }
 
-      if(PE::treeNode("Curvature-adaptive simplification"))
+      if(PE::treeNode("Feature-aware simplification"))
       {
-       PE::SliderFloat("Curvature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0, "Controls how much high-curvature regions are preserved during simplification. Higher values = more detail preservation.");
-       PE::SliderFloat("Curvature window radius", &m_sceneConfigEdit.curvatureWindowRadius, 0.1f, 5.0f, "%.2f", 0, "Radius for local curvature estimation. Larger values = smoother curvature estimation.");
-       PE::SliderFloat("Feature edge threshold", &m_sceneConfigEdit.featureEdgeThreshold, 0.1f, 2.0f, "%.2f", 0, "Edge length threshold for feature detection. Edges longer than this are protected.");
+       PE::SliderFloat("Feature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0, "Controls how strongly high-importance CAD features reduce decimation.");
+       PE::SliderFloat("Curvature sensitivity", &m_sceneConfigEdit.curvatureWindowRadius, 0.0f, 5.0f, "%.2f", 0, "Sensitivity for normal-variation feature scoring.");
+       PE::SliderFloat("Sharp edge angle", &m_sceneConfigEdit.featureEdgeThreshold, 0.0f, 2.0f, "%.2f", 0, "Dihedral angle threshold in radians for sharp-edge detection.");
        PE::SliderFloat("Perceptual weight", &m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f, "%.3f", 0, "Weight for perceptual error metric based on vertex count reduction.");
-       PE::SliderFloat("Silhouette preservation", &m_sceneConfigEdit.silhouettePreservation, 0.0f, 1.0f, "%.3f", 0, "Controls how much silhouette edges are preserved during simplification.");
+       PE::SliderFloat("Boundary preservation", &m_sceneConfigEdit.silhouettePreservation, 0.0f, 1.0f, "%.3f", 0, "Controls protection of boundary, hole-loop, and non-manifold feature vertices.");
         //////////////////////////////////////
         m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
         m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);

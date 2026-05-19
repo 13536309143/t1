@@ -18,6 +18,7 @@ struct Cluster
 	std::vector<unsigned int> indices;
 	int group;
 	int refined;
+	float feature_importance = 0.f;
 	clodBounds bounds;
 };
 
@@ -34,6 +35,7 @@ struct IterationContext
 	clodOutput output_callback = nullptr;
 	std::vector<unsigned char> locks;
 	std::vector<unsigned int>  remap;
+	std::vector<float> feature_importance;
 
 	int depth = 0;
 	std::vector<Cluster> clusters;
@@ -46,14 +48,13 @@ struct IterationContext
 
 clodBounds boundsCompute(const clodMesh& mesh, const std::vector<unsigned int>& indices, float error);
 clodBounds boundsMerge(const std::vector<Cluster>& clusters, const std::vector<int>& group);
-std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, const unsigned int* indices, size_t index_count);
+std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, const unsigned int* indices, size_t index_count, const std::vector<float>* feature_importance);
 std::vector<std::vector<int> > partition(const clodConfig& config, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& pending, const std::vector<unsigned int>& remap);
 void lockBoundary(std::vector<unsigned char>& locks, const std::vector<std::vector<int> >& groups, const std::vector<Cluster>& clusters, const std::vector<unsigned int>& remap, const unsigned char* vertex_lock);
-float computeVertexCurvature(const float* positions, size_t stride, const unsigned int* indices, size_t index_count, unsigned int vertex, float radius);
-void computeFeatureWeights(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, std::vector<float>& feature_weights, std::vector<unsigned char>& enhanced_locks);
+std::vector<float> computeFeatureImportance(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& remap);
 float perceptualError(float geometric_error, float vertex_count, float original_count);
 void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error);
-std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error);
+std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, const std::vector<float>& feature_importance, size_t target_count, float* error);
 int outputGroup(const clodConfig& config, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& group, const clodBounds& simplified, int depth, void* output_context, clodOutput output_callback, size_t task_index, unsigned int thread_index);
 
 }
