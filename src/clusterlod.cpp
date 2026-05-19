@@ -437,10 +437,8 @@ namespace lodclusters {
      clodInfo.simplify_error_merge_previous = m_config.lodErrorMergePrevious;
      clodInfo.simplify_error_merge_additive = m_config.lodErrorMergeAdditive;
      clodInfo.simplify_error_edge_limit = m_config.lodErrorEdgeLimit;
-     clodInfo.simplify_ratio = m_config.lodLevelDecimationFactor;
      ///////////////////////////////////////
 	   //开启lod优化
-     clodInfo.industrial_feature_preservation = true;
      clodInfo.curvature_adaptive_strength = m_config.curvatureAdaptiveStrength;
      clodInfo.curvature_window_radius = m_config.curvatureWindowRadius;
      clodInfo.feature_edge_threshold = m_config.featureEdgeThreshold;
@@ -488,13 +486,6 @@ namespace lodclusters {
        inputMesh.vertex_attributes        = geometry.vertexAttributes.data();
        inputMesh.vertex_attributes_stride = sizeof(float) * inputMesh.attribute_count;
        inputMesh.attribute_weights        = attributeWeights;
-       if(clodInfo.industrial_feature_preservation && m_config.simplifyNormalWeight > 0
-          && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL))
-       {
-         inputMesh.attribute_protect_mask |= 1u << (geometry.attributeNormalOffset + 0);
-         inputMesh.attribute_protect_mask |= 1u << (geometry.attributeNormalOffset + 1);
-         inputMesh.attribute_protect_mask |= 1u << (geometry.attributeNormalOffset + 2);
-       }
      }
      TempContext context = {processingInfo, geometry, *this};
      // 估算最坏情况下的组元信息大小，用于分配临时内存
@@ -515,9 +506,9 @@ namespace lodclusters {
      size_t reservedClusters  = (geometry.triangles.size() + m_config.clusterTriangles - 1) / m_config.clusterTriangles;
      size_t reservedGroups    = (reservedClusters + m_config.clusterGroupSize - 1) / m_config.clusterGroupSize;
      size_t reservedTriangles = geometry.triangles.size();
-     reservedClusters  = size_t(double(reservedClusters) * 1.35);
-     reservedGroups    = size_t(double(reservedGroups) * 1.75);
-     reservedTriangles = size_t(double(reservedTriangles) * 1.35);
+     reservedClusters  = size_t(double(reservedClusters) * 2.0);
+     reservedGroups    = size_t(double(reservedGroups) * 3.0);
+     reservedTriangles = size_t(double(reservedTriangles) * 2.0);
      size_t reservedData = 0;
      reservedData += sizeof(shaderio::Group) * reservedGroups;
      reservedData += sizeof(shaderio::Cluster) * reservedClusters;
@@ -525,27 +516,18 @@ namespace lodclusters {
      reservedData += sizeof(uint32_t) * reservedClusters;
      reservedData += sizeof(uint8_t) * reservedTriangles;
      reservedData += sizeof(glm::vec3) * reservedClusters * m_config.clusterVertices;
-     constexpr size_t LARGE_RESERVE_LIMIT = size_t(1024) * 1024 * 1024;
-     if(reservedData <= LARGE_RESERVE_LIMIT)
-     {
-       geometry.groupData.reserve(reservedData);
-     }
-     else
-     {
-       geometry.groupData.reserve(std::min(reservedData, LARGE_RESERVE_LIMIT));
-       LOGI("LOD build: capped groupData reserve at 1024 MiB to reduce preprocessing peak memory\n");
-     }
-     geometry.groupInfos.reserve(std::min<size_t>(reservedGroups, 4u * 1024u * 1024u));
+     geometry.groupData.reserve(reservedData);
+     geometry.groupInfos.reserve(reservedGroups);
      geometry.lodLevels.reserve(32);
      // 【此处根据用户注释，修改为了单线程】
      // 强制关闭多线程并发迭代，保证 QEM (Quadric Error Metrics) 简化结果绝对一致
      // clodBuild 会进行递归的“生成集群->合并->简化->生成更粗糙的集群”的过程  // 强制关闭多线程并发迭代，保证 QEM 简化结果绝对一致//////////////////////////////////////这里可以控制每次简化的是否一样
-     clodBuild(clodInfo, inputMesh, &context, clodGroupMeshoptimizer,
-               processingInfo.numInnerThreads > 1 ? clodIterationMeshoptimizer : nullptr);
+     //clodBuild(clodInfo, inputMesh, &context, clodGroupMeshoptimizer,processingInfo.numInnerThreads > 1 ? clodIterationMeshoptimizer : nullptr);
+     clodBuild(clodInfo, inputMesh, &context, clodGroupMeshoptimizer, nullptr);//单线程///////////////////////////////////
      // 原始网格数据已经被处理完了，清空以节省系统内存
-     std::vector<glm::uvec3>().swap(geometry.triangles);
-     std::vector<glm::vec3>().swap(geometry.vertexPositions);
-     std::vector<float>().swap(geometry.vertexAttributes);
+     geometry.triangles        = {};
+     geometry.vertexPositions  = {};
+     geometry.vertexAttributes = {};
      geometry.lodLevelsCount = uint32_t(geometry.lodLevels.size());
     // 校验构建结果：最后一级 LOD（最远、最模糊的层级）必须只剩下一个 Group 和一个 Cluster 
     /////////////////////////////////////////////////////////////////////////
@@ -566,12 +548,9 @@ namespace lodclusters {
      // 这样可以处理那些无法简化为单个 cluster 的复杂模型
 
      // 压缩多余的 vector 预留内存
-     if(geometry.groupData.size() < LARGE_RESERVE_LIMIT / 2)
-     {
-       geometry.groupInfos.shrink_to_fit();
-       geometry.groupData.shrink_to_fit();
-       geometry.lodLevels.shrink_to_fit();
-     }
+     geometry.groupInfos.shrink_to_fit();
+     geometry.groupData.shrink_to_fit();
+     geometry.lodLevels.shrink_to_fit();
      // 构建用于 GPU 剔除和遍历的 LOD 空间层次包围树
      buildHierarchy(processingInfo, geometry);
      // 计算树节点的最终包围盒边界

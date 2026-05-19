@@ -48,42 +48,6 @@ layout(local_size_x=TRAVERSAL_RUN_WORKGROUP) in;
 #include "traversal.glsl"
 // 修复老旧驱动对 volatile 和 coherent 支持不佳的问题，强制使用原子级加载/存储
 #define USE_ATOMIC_LOAD_STORE 1
-
-#if USE_STREAMING
-uint findStreamingGroupLodLevel(Geometry geometry, uint groupIndex)
-{
-  for(uint i = 0; i < geometry.lodLevelsCount; i++)
-  {
-    LodLevel lodLevel = geometry.lodLevels.d[i];
-    if(groupIndex >= lodLevel.groupOffset && groupIndex < lodLevel.groupOffset + lodLevel.groupCount)
-    {
-      return i;
-    }
-  }
-  return geometry.lodLevelsCount > 0 ? geometry.lodLevelsCount - 1 : 0;
-}
-
-uint packStreamingLoadPriority(Geometry geometry, uint groupIndex, mat4x3 worldMatrix, float uniformScale,
-                               TraversalMetric metric, bool isVisible)
-{
-  vec3  spherePos         = vec3(metric.boundingSphereX, metric.boundingSphereY, metric.boundingSphereZ);
-  float minDistance       = max(view.nearPlane, 1.0e-5f);
-  float sphereDistance    = length(vec3(mat4x3(build.traversalViewMatrix * toMat4(worldMatrix)) * vec4(spherePos, 1.0f)));
-  float errorDistance     = max(minDistance, sphereDistance - metric.boundingSphereRadius * uniformScale);
-  float errorOverDistance = metric.maxQuadricError * uniformScale / errorDistance;
-  float errorRatio        = errorOverDistance / max(build.errorOverDistanceThreshold, 1.0e-8f);
-
-  uint  lodLevel      = findStreamingGroupLodLevel(geometry, groupIndex);
-  float maxLod        = max(float(geometry.lodLevelsCount - 1), 1.0f);
-  float fineLodWeight = 1.0f - clamp(float(lodLevel) / maxLod, 0.0f, 1.0f);
-  float featureProxy  = clamp((metric.maxQuadricError / max(metric.boundingSphereRadius, 1.0e-5f)) * 8.0f, 0.15f, 4.0f);
-  float visibleProb   = isVisible ? 1.0f : 0.05f;
-  float loadCostProxy = 1.0f + fineLodWeight * 3.0f;
-  float priority      = visibleProb * clamp(errorRatio, 0.02f, 16.0f) * featureProxy / loadCostProxy;
-
-  return uint(clamp(priority * 1024.0f, 1.0f, 1048575.0f));
-}
-#endif
 ////////////////////////////////////////////
 // Computes the number of children for an incoming node / group task.
 // These children are then processed within `processSubTask` a few lines down
@@ -350,11 +314,9 @@ traversalMetric = Group_in(geometry.streamingGroupAddresses.d[clusterGeneratingG
                }
           offsetRequested = subgroupBroadcastFirst(offsetRequested);// 把拿到的地址发给全员
           offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
-          if (triggerRequest && offsetRequested < streaming.request.maxLoads) {
+          if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
           // 正式把缺失的 mesh ID 写入加载请求队列！让 CPU 或者 IO 线程去拉数据
                  streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
-                 streaming.request.loadPriorities.d[offsetRequested] =
-                     packStreamingLoadPriority(geometry, groupIndex, worldMatrix, uniformScale, traversalMetric, isValid);
                }
         }
       }

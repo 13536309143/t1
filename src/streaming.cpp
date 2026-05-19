@@ -1,40 +1,9 @@
 //流式传输
 #include <volk.h>
 #include <fmt/format.h>
-#include <algorithm>
-#include <cmath>
-#include <unordered_set>
 #include "streaming.hpp"
 #define STREAMING_DEBUG_FORCE_REQUESTS 0
 namespace lodclusters {
-
-namespace {
-float saturate(float value)
-{
-  return std::clamp(value, 0.0f, 1.0f);
-}
-
-float safeDivide(float numerator, float denominator)
-{
-  return denominator > 0.0f ? numerator / denominator : 0.0f;
-}
-
-float computeBudgetPressure(const StreamingStats& stats)
-{
-  const uint64_t totalDataBytes = stats.usedDataBytes + stats.persistentDataBytes;
-  float dataPressure = stats.maxDataBytes ? safeDivide(float(totalDataBytes), float(stats.maxDataBytes)) : 0.0f;
-  float groupPressure = stats.maxGroups ? safeDivide(float(stats.residentGroups), float(stats.maxGroups)) : 0.0f;
-  float clusterPressure =
-      stats.maxClusters ? safeDivide(float(stats.residentClusters), float(stats.maxClusters)) : 0.0f;
-  return std::max(dataPressure, std::max(groupPressure, clusterPressure));
-}
-
-float getStreamingFeatureProxy(const shaderio::TraversalMetric& metric)
-{
-  return std::clamp((metric.maxQuadricError / std::max(metric.boundingSphereRadius, 1.0e-5f)) * 8.0f, 0.15f,
-                    4.0f);
-}
-}  // namespace
 
 template <class T>
 struct OffsetOrPointer
@@ -473,34 +442,8 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
     m_requests.applyTask(m_shaderData.request, pushRequestIndex, m_frameIndex);
   }
 
-  StreamingStats budgetStats = {};
-  m_storage.getStats(budgetStats);
-  m_resident.getStats(budgetStats);
-  budgetStats.persistentDataBytes = m_persistentGeometrySize;
-
-  const float budgetPressure = computeBudgetPressure(budgetStats);
-  uint32_t    dynamicAge     = settings.ageThreshold;
-  if(m_config.useBudgetAwareScheduling)
-  {
-    const float pressureRange =
-        saturate((budgetPressure - m_config.streamingBudgetLowWatermark)
-                 / std::max(0.01f, m_config.streamingBudgetHighWatermark - m_config.streamingBudgetLowWatermark));
-    if(pressureRange > 0.0f)
-    {
-      dynamicAge = std::max(2u, uint32_t(std::round(float(dynamicAge) * (1.0f - pressureRange * 0.55f))));
-    }
-    if(settings.cameraMotion > 0.01f && pressureRange < 0.75f)
-    {
-      dynamicAge = std::min(1024u, uint32_t(std::round(float(dynamicAge) * (1.0f + settings.cameraMotion))));
-    }
-  }
-
-  m_stats.budgetPressure      = budgetPressure;
-  m_stats.cameraMotion        = settings.cameraMotion;
-  m_stats.dynamicAgeThreshold = dynamicAge;
-
   m_shaderData.frameIndex               = m_frameIndex;
-  m_shaderData.ageThreshold             = dynamicAge;
+  m_shaderData.ageThreshold             = settings.ageThreshold;
 
   // upload final configurations for this frame
   vkCmdUpdateBuffer(cmd, m_shaderBuffer.buffer, 0, sizeof(m_shaderData), &m_shaderData);
@@ -621,208 +564,9 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   m_stats.couldNotAllocateGroup = 0;
   m_stats.couldNotStore         = 0;
   m_stats.uncompletedLoadCount  = 0;
-  m_stats.prioritizedLoadCount  = 0;
-  m_stats.deferredLoadCount     = 0;
-  m_stats.duplicateLoadCount    = 0;
-  m_stats.budgetDeferredCount   = 0;
-  m_stats.minAcceptedPriority   = 0.0f;
-  m_stats.avgAcceptedPriority   = 0.0f;
 
   // 优化：批量处理加载请求，减少冗余操作
   uint32_t processedLoads = 0;
-  if(m_config.useBudgetAwareScheduling)
-  {
-    struct LoadCandidate
-    {
-      GeometryGroup              geometryGroup;
-      const Scene::GeometryView* sceneGeometry   = nullptr;
-      Scene::GroupInfo           groupInfo       = {};
-      uint32_t                   clusterCount    = 0;
-      uint64_t                   groupDeviceSize = 0;
-      uint32_t                   shaderPriority  = 0;
-      float                      priority        = 0.0f;
-    };
-
-    StreamingStats budgetStats = {};
-    m_storage.getStats(budgetStats);
-    m_resident.getStats(budgetStats);
-    budgetStats.persistentDataBytes = m_persistentGeometrySize;
-
-    const float budgetPressure = computeBudgetPressure(budgetStats);
-    const float pressureRange =
-        saturate((budgetPressure - m_config.streamingBudgetLowWatermark)
-                 / std::max(0.01f, m_config.streamingBudgetHighWatermark - m_config.streamingBudgetLowWatermark));
-    const float minPriority = 0.02f + pressureRange * 0.75f;
-    const float motionBoost = 1.0f + saturate(settings.cameraMotion) * 0.25f;
-    const uint32_t dynamicLoadLimit =
-        std::max(4u, std::min(m_config.maxPerFrameLoadRequests,
-                              uint32_t(std::round(float(m_config.maxPerFrameLoadRequests)
-                                                  * (1.0f - pressureRange * 0.65f) * motionBoost))));
-
-    std::vector<LoadCandidate> candidates;
-    candidates.reserve(loadCount);
-    std::unordered_set<uint64_t> seenLoadGroups;
-    seenLoadGroups.reserve(loadCount);
-
-    for(uint32_t g = 0; g < loadCount; g++)
-    {
-      GeometryGroup geometryGroup = request.loadGeometryGroups[g];
-
-      assert(geometryGroup.geometryID < m_scene->getActiveGeometryCount());
-      assert(geometryGroup.groupID < m_scene->getActiveGeometry(geometryGroup.geometryID).groupInfos.size());
-
-      if(!seenLoadGroups.insert(geometryGroup.key).second)
-      {
-        m_stats.duplicateLoadCount++;
-        continue;
-      }
-
-      if(m_resident.findGroup(geometryGroup))
-      {
-        continue;
-      }
-
-      const Scene::GeometryView& sceneGeometry = m_scene->getActiveGeometry(geometryGroup.geometryID);
-      const Scene::GroupInfo     groupInfo     = sceneGeometry.groupInfos[geometryGroup.groupID];
-      Scene::GroupView           groupView(sceneGeometry.groupData, groupInfo);
-
-      LoadCandidate candidate;
-      candidate.geometryGroup   = geometryGroup;
-      candidate.sceneGeometry   = &sceneGeometry;
-      candidate.groupInfo       = groupInfo;
-      candidate.clusterCount    = groupInfo.clusterCount;
-      candidate.groupDeviceSize = groupInfo.getDeviceSize();
-      candidate.shaderPriority  = request.loadPriorities ? request.loadPriorities[g] : 1024u;
-
-      const float shaderScore = std::max(0.001f, float(candidate.shaderPriority) / 1024.0f);
-      const float featureImportance = 1.0f + getStreamingFeatureProxy(groupView.group->traversalMetric) * 0.5f;
-      const float sharingImportance =
-          1.0f + std::log2(float(1 + std::max(1u, sceneGeometry.instanceReferenceCount))) * 0.20f;
-      const float loadCost =
-          std::max(1.0f, float(candidate.groupDeviceSize) / (64.0f * 1024.0f) + float(candidate.clusterCount) / 16.0f);
-      const float costExponent = 0.55f + budgetPressure * 1.15f + saturate(settings.cameraMotion) * 0.35f;
-      const float motionUrgency = 1.0f + saturate(settings.cameraMotion) * m_config.streamingCameraMotionBoost;
-
-      candidate.priority =
-          shaderScore * featureImportance * sharingImportance * motionUrgency / std::pow(loadCost, costExponent);
-      candidates.push_back(candidate);
-    }
-
-    std::sort(candidates.begin(), candidates.end(), [](const LoadCandidate& a, const LoadCandidate& b) {
-      if(a.priority != b.priority)
-        return a.priority > b.priority;
-      if(a.shaderPriority != b.shaderPriority)
-        return a.shaderPriority > b.shaderPriority;
-      return a.geometryGroup.key < b.geometryGroup.key;
-    });
-
-    m_stats.prioritizedLoadCount = uint32_t(candidates.size());
-    m_stats.budgetPressure       = budgetPressure;
-    m_stats.cameraMotion         = settings.cameraMotion;
-    m_stats.minAcceptedPriority  = minPriority;
-
-    float  prioritySum     = 0.0f;
-    size_t acceptedBytes   = 0;
-    size_t softBudgetBytes = 0;
-    if(budgetStats.maxDataBytes)
-    {
-      softBudgetBytes = size_t(double(budgetStats.maxDataBytes) * double(m_config.streamingBudgetHighWatermark));
-    }
-
-    for(const LoadCandidate& candidate : candidates)
-    {
-      const GeometryGroup geometryGroup = candidate.geometryGroup;
-
-      if(updateTask.loadCount >= dynamicLoadLimit)
-      {
-        m_stats.deferredLoadCount++;
-        m_stats.uncompletedLoadCount++;
-        continue;
-      }
-
-      if(candidate.priority < minPriority)
-      {
-        m_stats.deferredLoadCount++;
-        m_stats.uncompletedLoadCount++;
-        continue;
-      }
-
-      if(softBudgetBytes && (budgetStats.usedDataBytes + acceptedBytes + candidate.groupDeviceSize) > softBudgetBytes)
-      {
-        m_stats.budgetDeferredCount++;
-        m_stats.uncompletedLoadCount++;
-        continue;
-      }
-
-      uint64_t                  deviceAddress;
-      nvvk::BufferSubAllocation storageHandle;
-
-      if(!m_storage.canTransfer(storageTask, candidate.groupDeviceSize))
-      {
-        m_stats.couldNotTransfer++;
-        m_stats.uncompletedLoadCount++;
-        continue;
-      }
-
-      bool canStore         = m_storage.allocate(storageHandle, geometryGroup, candidate.groupDeviceSize, deviceAddress);
-      bool canAllocateGroup = m_resident.canAllocateGroup(candidate.clusterCount);
-
-      if(!canStore || !canAllocateGroup)
-      {
-        m_stats.couldNotAllocateGroup += (!canAllocateGroup);
-        m_stats.couldNotStore += (!canStore);
-        if(canStore)
-        {
-          m_storage.free(storageHandle);
-        }
-        m_stats.uncompletedLoadCount++;
-        continue;
-      }
-
-      processedLoads++;
-      prioritySum += candidate.priority;
-      acceptedBytes += candidate.groupDeviceSize;
-
-      StreamingResident::Group* residentGroup = m_resident.addGroup(geometryGroup, candidate.clusterCount);
-      residentGroup->storageHandle            = storageHandle;
-      residentGroup->deviceAddress            = deviceAddress;
-      residentGroup->lodLevel                 = candidate.groupInfo.lodLevel;
-      void* groupData                         = m_storage.appendTransfer(storageTask, residentGroup->storageHandle);
-
-      assert(deviceAddress % 16 == 0);
-
-      {
-        Scene::GroupView groupView(candidate.sceneGeometry->groupData, candidate.groupInfo);
-        if(candidate.groupInfo.uncompressedSizeBytes)
-        {
-          Scene::decompressGroup(candidate.groupInfo, groupView, groupData, candidate.groupDeviceSize);
-        }
-        else
-        {
-          memcpy(groupData, groupView.raw, groupView.rawSize);
-        }
-      }
-
-      m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[candidate.groupInfo.lodLevel]++;
-
-      shaderio::StreamingPatch& patch = updateTask.loadPatches[updateTask.loadCount++];
-      patch.geometryID                = geometryGroup.geometryID;
-      patch.groupID                   = geometryGroup.groupID;
-      patch.groupAddress              = deviceAddress;
-      patch.groupResidentID           = residentGroup->groupResidentID;
-      patch.clusterResidentID         = residentGroup->clusterResidentID;
-      patch.clusterCount              = candidate.groupInfo.clusterCount;
-      patch.lodLevel                  = candidate.groupInfo.lodLevel;
-
-      transferBytes += candidate.groupInfo.sizeBytes;
-    }
-
-    if(processedLoads)
-    {
-      m_stats.avgAcceptedPriority = prioritySum / float(processedLoads);
-    }
-  }
-  else
   for(uint32_t g = 0; g < loadCount; g++)
   {
     GeometryGroup geometryGroup = request.loadGeometryGroups[g];

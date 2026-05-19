@@ -685,16 +685,16 @@ void LodClusters::onUIRender()
         PE::InputFloat("BiTangent Sign weight", &m_sceneConfigEdit.simplifyTangentSignWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
         ////////////////////////////////////
         //开启lod优化
-      //  PE::treePop();
-      // }
+       PE::treePop();
+      }
 
-      // if(PE::treeNode("Curvature-adaptive simplification"))
-      // {
-      //  PE::SliderFloat("Curvature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0, "Controls how much high-curvature regions are preserved during simplification. Higher values = more detail preservation.");
-      //  PE::SliderFloat("Curvature window radius", &m_sceneConfigEdit.curvatureWindowRadius, 0.1f, 5.0f, "%.2f", 0, "Radius for local curvature estimation. Larger values = smoother curvature estimation.");
-      //  PE::SliderFloat("Feature edge threshold", &m_sceneConfigEdit.featureEdgeThreshold, 0.1f, 2.0f, "%.2f", 0, "Edge length threshold for feature detection. Edges longer than this are protected.");
-      //  PE::SliderFloat("Perceptual weight", &m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f, "%.3f", 0, "Weight for perceptual error metric based on vertex count reduction.");
-      //  PE::SliderFloat("Silhouette preservation", &m_sceneConfigEdit.silhouettePreservation, 0.0f, 1.0f, "%.3f", 0, "Controls how much silhouette edges are preserved during simplification.");
+      if(PE::treeNode("Curvature-adaptive simplification"))
+      {
+       PE::SliderFloat("Curvature adaptive strength", &m_sceneConfigEdit.curvatureAdaptiveStrength, 0.0f, 1.0f, "%.3f", 0, "Controls how much high-curvature regions are preserved during simplification. Higher values = more detail preservation.");
+       PE::SliderFloat("Curvature window radius", &m_sceneConfigEdit.curvatureWindowRadius, 0.1f, 5.0f, "%.2f", 0, "Radius for local curvature estimation. Larger values = smoother curvature estimation.");
+       PE::SliderFloat("Feature edge threshold", &m_sceneConfigEdit.featureEdgeThreshold, 0.1f, 2.0f, "%.2f", 0, "Edge length threshold for feature detection. Edges longer than this are protected.");
+       PE::SliderFloat("Perceptual weight", &m_sceneConfigEdit.perceptualWeight, 0.0f, 1.0f, "%.3f", 0, "Weight for perceptual error metric based on vertex count reduction.");
+       PE::SliderFloat("Silhouette preservation", &m_sceneConfigEdit.silhouettePreservation, 0.0f, 1.0f, "%.3f", 0, "Controls how much silhouette edges are preserved during simplification.");
         //////////////////////////////////////
         m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
         m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);
@@ -766,17 +766,6 @@ void LodClusters::onUIRender()
 
        PE::InputIntClamped("Max Transfer MiB", (int*)&m_streamingConfig.maxTransferMegaBytes, 1, 1024, 1, 2,
                            ImGuiInputTextFlags_EnterReturnsTrue);
-
-       PE::Checkbox("Budget priority scheduling", &m_streamingConfig.useBudgetAwareScheduling,
-                    "Prioritize streaming by visibility, error reduction, feature weight, reuse and load cost");
-       ImGui::BeginDisabled(!m_streamingConfig.useBudgetAwareScheduling);
-       PE::InputFloat("Budget low watermark", &m_streamingConfig.streamingBudgetLowWatermark, 0.01f, 0.05f, "%.2f",
-                      ImGuiInputTextFlags_EnterReturnsTrue);
-       PE::InputFloat("Budget high watermark", &m_streamingConfig.streamingBudgetHighWatermark, 0.01f, 0.05f, "%.2f",
-                      ImGuiInputTextFlags_EnterReturnsTrue);
-       PE::InputFloat("Camera motion boost", &m_streamingConfig.streamingCameraMotionBoost, 0.1f, 0.5f, "%.2f",
-                      ImGuiInputTextFlags_EnterReturnsTrue);
-       ImGui::EndDisabled();
 
        PE::Checkbox("Async transfer", &m_streamingConfig.useAsyncTransfer, "Use asynchronous transfer queue for uploads");
        ImGui::BeginDisabled(!m_streamingConfig.useAsyncTransfer);
@@ -879,33 +868,6 @@ void LodClusters::onUIRender()
                           formatMetric(stats.uncompletedLoadCount).c_str());
        ImGui::TableNextColumn();
        ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%d %%", pctUncompleted);
-       ImGui::TableNextRow();
-       ImGui::TableNextColumn();
-
-       ImGui::Text("Priority candidates");
-       ImGui::TableNextColumn();
-       ImGui::TextColored(text_color, "%s", formatMetric(stats.prioritizedLoadCount).c_str());
-       ImGui::TableNextColumn();
-       ImGui::TextColored(text_color, "%.2f avg", stats.avgAcceptedPriority);
-       ImGui::TableNextRow();
-       ImGui::TableNextColumn();
-
-       ImGui::Text("Budget deferred");
-       ImGui::TableNextColumn();
-       ImGui::TextColored(stats.budgetDeferredCount ? warn_color : text_color, "%s",
-                          formatMetric(stats.budgetDeferredCount).c_str());
-       ImGui::TableNextColumn();
-       ImGui::TextColored(stats.deferredLoadCount ? warn_color : text_color, "%s def",
-                          formatMetric(stats.deferredLoadCount).c_str());
-       ImGui::TableNextRow();
-       ImGui::TableNextColumn();
-
-       ImGui::Text("Budget pressure");
-       ImGui::TableNextColumn();
-       ImGui::TextColored(stats.budgetPressure > m_streamingConfig.streamingBudgetHighWatermark ? warn_color : text_color,
-                          "%.3f", stats.budgetPressure);
-       ImGui::TableNextColumn();
-       ImGui::TextColored(text_color, "age %u", stats.dynamicAgeThreshold);
        ImGui::TableNextRow();
        ImGui::TableNextColumn();
 

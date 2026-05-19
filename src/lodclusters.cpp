@@ -63,10 +63,6 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"maxresidentgroups"}, &m_streamingConfig.maxGroups);
   m_info.parameterRegistry->add({"maxframeloadrequests"}, &m_streamingConfig.maxPerFrameLoadRequests);
   m_info.parameterRegistry->add({"maxframeunloadrequests"}, &m_streamingConfig.maxPerFrameUnloadRequests);
-  m_info.parameterRegistry->add({"budgetstreaming"}, &m_streamingConfig.useBudgetAwareScheduling);
-  m_info.parameterRegistry->add({"streambudgetlow"}, &m_streamingConfig.streamingBudgetLowWatermark);
-  m_info.parameterRegistry->add({"streambudgethigh"}, &m_streamingConfig.streamingBudgetHighWatermark);
-  m_info.parameterRegistry->add({"streammotionboost"}, &m_streamingConfig.streamingCameraMotionBoost);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
   //two

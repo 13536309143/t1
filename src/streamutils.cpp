@@ -16,8 +16,6 @@ void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint
   BufferRanges ranges = {};
   m_shaderData.loadGeometryGroups =
       ranges.append(sizeof(GeometryGroup) * nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment), 8);
-  m_shaderData.loadPriorities =
-      ranges.append(sizeof(uint32_t) * nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment), 4);
   m_shaderData.unloadGeometryGroups =
       ranges.append(sizeof(GeometryGroup) * nvutils::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment), 8);
   m_requestSize = ranges.getSize();
@@ -50,8 +48,6 @@ void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint
         uint64_t(m_requestHostBuffer.mapping) + m_shaderDataOffset + sizeof(shaderio::StreamingRequest) * c);
     task.loadGeometryGroups = reinterpret_cast<const GeometryGroup*>(
         uint64_t(m_requestHostBuffer.mapping) + m_requestSize * c + m_shaderData.loadGeometryGroups);
-    task.loadPriorities = reinterpret_cast<const uint32_t*>(
-        uint64_t(m_requestHostBuffer.mapping) + m_requestSize * c + m_shaderData.loadPriorities);
     task.unloadGeometryGroups = reinterpret_cast<const GeometryGroup*>(
         uint64_t(m_requestHostBuffer.mapping) + m_requestSize * c + m_shaderData.unloadGeometryGroups);
   }
@@ -72,7 +68,6 @@ void StreamingRequests::applyTask(shaderio::StreamingRequest& shaderData, uint32
 {
   shaderData = m_shaderData;
   shaderData.loadGeometryGroups += m_requestBuffer.address + m_requestSize * taskIndex;
-  shaderData.loadPriorities += m_requestBuffer.address + m_requestSize * taskIndex;
   shaderData.unloadGeometryGroups += m_requestBuffer.address + m_requestSize * taskIndex;
   shaderData.taskIndex = taskIndex;
   // special address value that allows us to ensure that a non-resident geometry group

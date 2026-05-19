@@ -401,10 +401,6 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   {
     SceneStreaming::FrameSettings settings;
     settings.ageThreshold = frame.streamingAgeThreshold; // 根据年龄卸载不常用 LOD 数据
-    settings.cameraMotion =
-        glm::clamp(glm::length(glm::vec3(frame.frameConstants.viewPos - frame.frameConstantsLast.viewPos))
-                       / std::max(frame.frameConstants.sceneSize, 1.0e-5f),
-                   0.0f, 1.0f);
     rscene.sceneStreaming.cmdBeginFrame(cmd, res.m_queueStates.primary, res.m_queueStates.transfer, settings, profiler);
   }
   // 插入内存屏障，确保所有 vkCmdUpdateBuffer / fillBuffer 的数据对 Shader 来说是完全准备好且可见的

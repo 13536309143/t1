@@ -24,7 +24,6 @@ struct clodConfig
 	bool simplify_regularize;
 	bool optimize_bounds;
 	bool optimize_clusters;
-	bool industrial_feature_preservation;
 	float curvature_adaptive_strength;
 	float curvature_window_radius;
 	float feature_edge_threshold;

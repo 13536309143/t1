@@ -19,7 +19,7 @@ namespace lodclusters {
 // Controls the scene's data generation during loading and processing.
 struct SceneConfig
 {
-  static const uint32_t version = 3;
+  static const uint32_t version = 2;
 
   // cluster and cluster group settings
   uint32_t clusterVertices    = 128;
@@ -59,8 +59,6 @@ struct SceneConfig
   ////////////////////////////////////////////////
   // 开启lod优化
   // curvature-adaptive simplification parameters
-  // Industrial feature preservation is evaluated locally per cluster group so
-  // multi-GB models do not need a global edge graph.
   float curvatureAdaptiveStrength = 0.3f;
   float curvatureWindowRadius = 0.5f;
   float featureEdgeThreshold = 0.5f;
@@ -81,6 +79,7 @@ struct SceneConfig
   // 开启lod优化
   uint32_t reservedData[9] = {};
   //////////////////////////////////////////////////
+  // uint32_t reservedData[14] = {};
 };
 
 // Control the loading and processing procedure of the scene.
@@ -591,8 +590,8 @@ private:
       Header reference = {};
 
       return header.magic == reference.magic && header.geoVersion == reference.geoVersion
-             && header.geoStructSize == reference.geoStructSize && header.configVersion == reference.configVersion
-             && header.configStructSize == reference.configStructSize && header.alignment == reference.alignment;
+             && header.geoStructSize == reference.geoStructSize && header.configStructSize == reference.configStructSize
+             && header.alignment == reference.alignment;
     }
 
   private:
