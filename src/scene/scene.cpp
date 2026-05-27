@@ -1,7 +1,3 @@
-/*
- * File: src/scene/scene.cpp
- * Purpose: Core scene processing utilities, geometry setup, bounds, statistics, and generated scene data.
- */
 //场景的基础数据结构，保存了网格、材质、实例等信息
 #include <cinttypes>
 #include <cstring>

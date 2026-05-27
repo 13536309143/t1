@@ -33,3 +33,9 @@ added inside the existing module folders without changing the top-level build fi
 - C++ include directories are module-level, so includes stay short and independent of file locations.
 - Shader compilation paths include the shader module folder, for example `passes/cluster/cluster_mesh.mesh.glsl`.
 - Runtime shader include search paths include every shader subdirectory for both source-tree and install-tree layouts.
+
+## Implementation Split
+
+- Application code is split into constructor/defaults, lifecycle/file loading, scene/render setup, runtime config changes, frame rendering, and UI.
+- GPU resource code is split into general resources/commands/shader compilation and framebuffer/Hi-Z render-target management.
+- Streaming task code is split into request/residency bookkeeping and allocator/update/transfer task execution.
