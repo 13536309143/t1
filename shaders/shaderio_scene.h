@@ -99,8 +99,10 @@ uint8s_in Cluster_getTriangleMaterials(Cluster_in cluster)
 }
 #endif
 
-// A group contains multiple clusters that are the result of a common mesh
-// decimation operation. Clusters within a group are watertight to each other.
+// A group contains multiple clusters that are the result of
+// a common mesh decimation operation. Clusters within a group
+// are watertight to each other. Groups are always streamed in
+// completely, which simplifies the streaming management.
 
 struct TraversalMetric
 {
@@ -115,7 +117,9 @@ struct TraversalMetric
 
 struct Group
 {
-  // Local group index and first local cluster index within the geometry.
+  // streaming: global unique id given on load
+  //            clusters array starts directly after group
+  // preloaded: local id within geometry
   uint32_t residentID;
   uint32_t clusterResidentID;
 
@@ -214,6 +218,7 @@ struct Geometry
   // lowest detail data is always available
   uint16_t lowDetailTriangles;
   uint32_t lowDetailClusterID;
+  uint64_t lowDetailBlasAddress;
 
   // object space geometry bbox
   BBox bbox;
@@ -224,9 +229,19 @@ struct Geometry
   BUFFER_REF(Nodes_in) nodes;
   BUFFER_REF(BBoxes_in) nodeBboxes;
 
-  // Preloaded group and cluster addresses.
+  // streaming (null if preloaded)
+  // provides memory address of a resident group.
+  //
+  // Note this 64-bit value uses a special encoding.
+  // only addresses < STREAMING_INVALID_ADDRESS_BEGIN can be dereferenced.
+  BUFFER_REF(uint64s_inout) streamingGroupAddresses;
+
+  // preloaded (null if streaming)
+  // clusters
   BUFFER_REF(uint64s_in) preloadedGroups;
   BUFFER_REF(uint64s_in) preloadedClusters;
+  BUFFER_REF(uint64s_in) preloadedClusterClasAddresses;
+  BUFFER_REF(uint32s_in) preloadedClusterClasSizes;
 };
 BUFFER_REF_DECLARE(Geometry_in, Geometry, readonly, 16);
 BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
