@@ -22,15 +22,17 @@ file(GLOB_RECURSE SHADER_FILES CONFIGURE_DEPENDS
 file(GLOB VK_RADIX_SORT_FILES thirdparty/vulkan_radix_sort/src/vk_radix_sort.cc)
 add_executable(${PROJECT_NAME} ${SOURCE_FILES} ${SHADER_FILES} ${VK_RADIX_SORT_FILES})
 target_include_directories(${PROJECT_NAME} PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/app"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/core"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/meshlod"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/application"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/io"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/lod/mesh"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/rendering"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/scene"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/scene/processing"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/streaming"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/vendor"
-  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/interface"
-  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/common"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party"
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/shared/interface"
+  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/shared/common"
   "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty"
   "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/vulkan_radix_sort/include"
 )

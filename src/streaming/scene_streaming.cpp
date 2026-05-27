@@ -962,9 +962,9 @@ bool SceneStreaming::initShadersAndPipelines()
   shaderc::CompileOptions optionsRaster = options;
   optionsRaster.AddMacroDefinition("TARGETS_RASTERIZATION", "1");
 
-  res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "streaming/streaming_age_filter_groups.comp.glsl", &options);
-  res.compileShader(m_shaders.computeSetup, VK_SHADER_STAGE_COMPUTE_BIT, "streaming/streaming_request_setup.comp.glsl", &options);
-  res.compileShader(m_shaders.computeUpdateSceneRaster, VK_SHADER_STAGE_COMPUTE_BIT, "streaming/streaming_scene_update.comp.glsl", &optionsRaster);
+  res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "compute/streaming/streaming_age_filter_groups.comp.glsl", &options);
+  res.compileShader(m_shaders.computeSetup, VK_SHADER_STAGE_COMPUTE_BIT, "compute/streaming/streaming_request_setup.comp.glsl", &options);
+  res.compileShader(m_shaders.computeUpdateSceneRaster, VK_SHADER_STAGE_COMPUTE_BIT, "compute/streaming/streaming_scene_update.comp.glsl", &optionsRaster);
 
   if(!res.verifyShaders(m_shaders))
   {
