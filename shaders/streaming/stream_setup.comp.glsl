@@ -1,3 +1,11 @@
+//==============================================================================
+// 文件：shaders/streaming/stream_setup.comp.glsl
+// 模块定位：流式加载着色器，维护 GPU 侧请求、驻留年龄、地址修补和任务压缩。
+// 数据流：遍历产生请求后，这些 阶段 整理 request、筛选 unload 候选并更新 Geometry 组 地址。
+// 方法说明：GPU 侧 流式加载 逻辑把可见性反馈转化为驻留集管理信号，从而实现按需几何加载。
+// 正确性约束：最低细节层通常保持常驻；地址更新必须先于后续 traversal 解引用；load/unload 顺序要与 CPU 任务一致。
+// 注释风格：使用中文解释 GPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
 #version 460
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
@@ -14,76 +22,97 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_clustered : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
+
+
+// 依赖说明：引入共享布局、剔除、着色或阶段间复用的着色器片段。
+// 这些 include 共同决定本文件能访问的结构布局、数学辅助函数和编译期宏。
 #include "shaderio.h"
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(push_constant) uniform pushData
 {
   uint setup;
 } push;
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
 {
   Readback readback;
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
 {
   Geometry geometries[];
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffer
 {
   SceneStreaming streaming;
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) coherent buffer streamingBufferRW
 {
   SceneStreaming streamingRW;
 };
 
-////////////////////////////////////////////
 
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(local_size_x=1) in;
 
-////////////////////////////////////////////
 
+// 函数：main。作为本着色器阶段入口，按绑定资源执行当前 GPU 工作。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该入口位于控制流根部，调用顺序决定后续资源生命周期和数据依赖。
 void main()
 {
   if (push.setup == STREAM_SETUP_COMPACTION_OLD_NO_UNLOADS)
   {
-    // we will not do compaction of old when there are no unloads.
-    // However appending new still depends on the/ `moveClasSize` to be configured 
-    // correctly, so that we will append after it.
-    
-    // first streaming frame has special rule
-    // (note we start at frame 1 not 0)
+
+
     if (streaming.frameIndex == 1)
     {
-      // reset the persistent stored value to zero
+
       streaming.resident.clasCompactionUsedSize.d[0] = 0;
       streamingRW.update.moveClasSize = 0;
     }
-    else {    
+    else {
       streamingRW.update.moveClasSize = streaming.resident.clasCompactionUsedSize.d[0];
     }
   }
   else if (push.setup == STREAM_SETUP_COMPACTION_STATUS)
   {
-    // move compaction for clas memory management
+
     if (streaming.update.patchGroupsCount > 0) {
-      // persistently store the total compacted clas size
+
       streaming.resident.clasCompactionUsedSize.d[0] = streamingRW.update.moveClasSize;
-      // for readback
+
       streamingRW.request.clasCompactionUsedSize = streamingRW.update.moveClasSize;
       streamingRW.request.clasCompactionCount    = streamingRW.update.moveClasCounter;
     }
     else {
-      // no update, pull value from persistent storage
+
       streamingRW.request.clasCompactionUsedSize = streaming.resident.clasCompactionUsedSize.d[0];
       streamingRW.request.clasCompactionCount    = 0;
     }
@@ -92,15 +121,15 @@ void main()
   {
     uint freeGaps = streamingRW.clasAllocator.freeGapsCounter;
     uint maxFreeGaps = (streaming.clasAllocator.sectorCount << streaming.clasAllocator.sectorSizeShift);
-  
-    // reset to zero for `stream_allocator_setup_insertion.comp.glsl`
+
+
     streamingRW.clasAllocator.freeGapsCounter = 0;
-    
-    // and setup actual dispatch that inserts the freegaps into the lists 
-    // within `stream_allocator_freelist_insert.comp.glsl`
+
+
     uint workGroupCount = (min(freeGaps,maxFreeGaps) + STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP -1) / STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP;
   #if USE_16BIT_DISPATCH
-    uvec3 grid = fit16bitLaunchGrid(workGroupCount);  
+
+    uvec3 grid = fit16bitLaunchGrid(workGroupCount);
     streamingRW.clasAllocator.dispatchFreeGapsInsert.gridX = grid.x;
     streamingRW.clasAllocator.dispatchFreeGapsInsert.gridY = grid.y;
     streamingRW.clasAllocator.dispatchFreeGapsInsert.gridZ = grid.z;
@@ -108,11 +137,12 @@ void main()
     streamingRW.clasAllocator.dispatchFreeGapsInsert.gridX = workGroupCount;
   #endif
   #if STREAMING_DEBUG_USEDBITS_COUNT
-    // error check allocation state prior adding new groups
-    uint64_t allocatedSize = streaming.clasAllocator.stats.d.allocatedSize;    
-    if (streaming.clasAllocator.usedBitsCount > 0 && 
+
+    uint64_t allocatedSize = streaming.clasAllocator.stats.d.allocatedSize;
+    if (streaming.clasAllocator.usedBitsCount > 0 &&
         allocatedSize != uint64_t(streaming.clasAllocator.usedBitsCount) << streaming.clasAllocator.granularityByteShift)
     {
+
       streamingRW.request.errorClasUsedVsAlloc = int(allocatedSize >> streaming.clasAllocator.granularityByteShift) - int(streaming.clasAllocator.usedBitsCount);
     }
   #endif
@@ -121,7 +151,7 @@ void main()
   {
     if (streaming.frameIndex == 1)
     {
-      // seed all available for first frame
+
       uint clasAllocatedMaxSizedLeft = streaming.clasAllocator.sectorMaxAllocationSized * streaming.clasAllocator.sectorCount;
       streaming.resident.clasAllocatedMaxSizedLeft.d[0] = clasAllocatedMaxSizedLeft;
       streamingRW.request.clasAllocatedMaxSizedLeft     = clasAllocatedMaxSizedLeft;
@@ -131,15 +161,15 @@ void main()
     #endif
     }
     else {
-      // persistent allocator for clas memory management
+
       if (streaming.update.patchGroupsCount > 0) {
-        // count can be negative
+
         uint clasAllocatedMaxSizedLeft = uint(max(0,streaming.clasAllocator.freeSizeRanges.d[streaming.clasAllocator.maxAllocationSize-1].count));
         streaming.resident.clasAllocatedMaxSizedLeft.d[0] = clasAllocatedMaxSizedLeft;
         streamingRW.request.clasAllocatedMaxSizedLeft     = clasAllocatedMaxSizedLeft;
       }
       else {
-        // no update, pull value from persistent storage
+
         streamingRW.request.clasAllocatedMaxSizedLeft = streaming.resident.clasAllocatedMaxSizedLeft.d[0];
       }
     }

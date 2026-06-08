@@ -1,9 +1,25 @@
+//==============================================================================
+// 文件：src/meshlod/meshlod_simplify.h
+// 模块定位：网格简化实现，处理特征边、曲率、感知误差、轮廓保护和回退简化策略。
+// 数据流：输入是当前 LOD 网格和权重配置；输出是更低复杂度的网格以及用于遍历的误差估计。
+// 方法说明：简化阶段不仅最小化几何误差，还引入法线、纹理坐标、切线和轮廓相关权重，以提高视觉一致性。
+// 正确性约束：回退路径必须保证算法收敛；误差度量应随简化增加保持非负并可用于屏幕空间阈值比较。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
 #pragma once
+
+
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include "meshlod_impl.h"
 
 namespace clod
 {
 
+
+// 结构：FeatureEdge。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。
+// 设计意图：把同一抽象对象的计数、偏移、地址和配置集中存放，降低跨函数传递时的语义丢失。
+// 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
 struct FeatureEdge
 {
 	unsigned int a;
@@ -14,11 +30,19 @@ struct FeatureEdge
 	float length;
 };
 
+
+// 函数：clamp01。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 static float clamp01(float v)
 {
 	return std::min(1.f, std::max(0.f, v));
 }
 
+
+// 函数：positionSub。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 static void positionSub(float r[3], const float* a, const float* b)
 {
 	r[0] = a[0] - b[0];
@@ -26,11 +50,19 @@ static void positionSub(float r[3], const float* a, const float* b)
 	r[2] = a[2] - b[2];
 }
 
+
+// 函数：dot3。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 static float dot3(const float* a, const float* b)
 {
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+
+// 函数：normalize3。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 static float normalize3(float v[3])
 {
 	float len = sqrtf(dot3(v, v));
@@ -43,13 +75,26 @@ static float normalize3(float v[3])
 	return len;
 }
 
+
+// 函数：length3。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 static float length3(const float* v)
 {
 	return sqrtf(dot3(v, v));
 }
 
+
+// 函数：computeFeatureImportance。计算派生值，供后续剔除、LOD、统计或资源规划使用。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：计算结果通常参与阈值比较或内存规划，数值稳定性和边界条件需要特别注意。
 std::vector<float> computeFeatureImportance(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& remap)
 {
+
+
+	// 函数：importance。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> importance(mesh.vertex_count, 0.f);
 	if (!mesh.indices || mesh.index_count < 3 || !mesh.vertex_positions)
 		return importance;
@@ -57,20 +102,76 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 	const size_t stride = mesh.vertex_positions_stride / sizeof(float);
 	const size_t face_count = mesh.index_count / 3;
 	const float sharp_threshold = config.feature_edge_threshold > 0.f ? config.feature_edge_threshold : 0.5f;
+
 	const float cos_threshold = cosf(sharp_threshold);
 
+
+	// 函数：face_normals。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> face_normals(face_count * 3, 0.f);
+
+
+	// 函数：mean_normals。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> mean_normals(mesh.vertex_count * 3, 0.f);
+
+
+	// 函数：normal_variation。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> normal_variation(mesh.vertex_count, 0.f);
+
+
+	// 函数：thin_wall。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> thin_wall(mesh.vertex_count, 0.f);
+
+
+	// 函数：boundary。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> boundary(mesh.vertex_count, 0.f);
+
+
+	// 函数：non_manifold。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> non_manifold(mesh.vertex_count, 0.f);
+
+
+	// 函数：boundary_degree。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<unsigned int> boundary_degree(mesh.vertex_count, 0);
+
+
+	// 函数：local_min_edge。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> local_min_edge(mesh.vertex_count, FLT_MAX);
+
+
+	// 函数：local_max_edge。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> local_max_edge(mesh.vertex_count, 0.f);
+
+
+	// 函数：local_edge_sum。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> local_edge_sum(mesh.vertex_count, 0.f);
+
+
+	// 函数：local_edge_count。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<unsigned int> local_edge_count(mesh.vertex_count, 0);
 	std::vector<FeatureEdge> edges;
+
 	edges.reserve(mesh.index_count);
 
 	float bbox_min[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
@@ -80,7 +181,9 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		const float* p = &mesh.vertex_positions[v * stride];
 		for (int c = 0; c < 3; ++c)
 		{
+
 			bbox_min[c] = std::min(bbox_min[c], p[c]);
+
 			bbox_max[c] = std::max(bbox_max[c], p[c]);
 		}
 	}
@@ -90,7 +193,9 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 	auto updateLocalScale = [&](unsigned int v, float length) {
 		if (v >= mesh.vertex_count || length <= 1e-12f)
 			return;
+
 		local_min_edge[v] = std::min(local_min_edge[v], length);
+
 		local_max_edge[v] = std::max(local_max_edge[v], length);
 		local_edge_sum[v] += length;
 		local_edge_count[v]++;
@@ -107,9 +212,12 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		const float* p2 = &mesh.vertex_positions[tri[2] * stride];
 
 		float e0[3], e1[3];
+
 		positionSub(e0, p1, p0);
+
 		positionSub(e1, p2, p0);
 		float e2[3];
+
 		positionSub(e2, p0, p2);
 
 		float edge_length[3] = {length3(e0), length3(&e1[0]), length3(e2)};
@@ -117,14 +225,21 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		float max_edge = std::max(edge_length[0], std::max(edge_length[1], edge_length[2]));
 		float aspect_score = clamp01((max_edge / min_edge - 4.f) / 14.f);
 
+
 		updateLocalScale(tri[0], edge_length[0]);
+
 		updateLocalScale(tri[1], edge_length[0]);
+
 		updateLocalScale(tri[1], edge_length[1]);
+
 		updateLocalScale(tri[2], edge_length[1]);
+
 		updateLocalScale(tri[2], edge_length[2]);
+
 		updateLocalScale(tri[0], edge_length[2]);
 
 		for (int i = 0; i < 3; ++i)
+
 			thin_wall[tri[i]] = std::max(thin_wall[tri[i]], aspect_score);
 
 		float n[3] = {
@@ -132,6 +247,7 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 			e0[2] * e1[0] - e0[0] * e1[2],
 			e0[0] * e1[1] - e0[1] * e1[0],
 		};
+
 
 		float area2 = normalize3(n);
 		if (area2 <= 1e-20f)
@@ -158,12 +274,14 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 			if (r0 == r1)
 				continue;
 			float ev[3];
+
 			positionSub(ev, &mesh.vertex_positions[v0 * stride], &mesh.vertex_positions[v1 * stride]);
 			edges.push_back({std::min(r0, r1), std::max(r0, r1), v0, v1, unsigned(f), length3(ev)});
 		}
 	}
 
 	for (size_t v = 0; v < mesh.vertex_count; ++v)
+
 		normalize3(&mean_normals[v * 3]);
 
 	std::sort(edges.begin(), edges.end(), [](const FeatureEdge& lhs, const FeatureEdge& rhs) {
@@ -180,7 +298,7 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 
 		if (end - begin == 1)
 		{
-			edge_score = 1.f; // model boundary / hole loop
+			edge_score = 1.f;
 			boundary[edges[begin].v0] = 1.f;
 			boundary[edges[begin].v1] = 1.f;
 			boundary_degree[edges[begin].v0]++;
@@ -188,7 +306,7 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		}
 		else if (end - begin > 2)
 		{
-			edge_score = 1.f; // non-manifold industrial CAD seam
+			edge_score = 1.f;
 			for (size_t i = begin; i < end; ++i)
 			{
 				non_manifold[edges[i].v0] = 1.f;
@@ -208,7 +326,9 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		{
 			for (size_t i = begin; i < end; ++i)
 			{
+
 				importance[edges[i].v0] = std::max(importance[edges[i].v0], edge_score);
+
 				importance[edges[i].v1] = std::max(importance[edges[i].v1], edge_score);
 			}
 		}
@@ -227,6 +347,7 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 			unsigned int v = mesh.indices[f * 3 + i];
 			const float* mn = &mean_normals[v * 3];
 			float curvature = clamp01((1.f - dot3(fn, mn)) * std::max(0.1f, config.curvature_window_radius));
+
 			normal_variation[v] = std::max(normal_variation[v], curvature);
 		}
 	}
@@ -238,6 +359,7 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		float slender_score = (avg_edge > 0.f && min_edge > 0.f) ? clamp01((avg_edge / min_edge - 2.f) / 6.f) : 0.f;
 		float small_scale_score = avg_edge > 0.f ? clamp01((model_scale * 0.015f - avg_edge) / (model_scale * 0.015f)) : 0.f;
 		float hole_loop_score = boundary_degree[v] >= 2 ? 1.f : boundary[v];
+
 
 		thin_wall[v] = std::max(thin_wall[v], slender_score * 0.7f + small_scale_score * 0.3f);
 
@@ -252,17 +374,25 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		importance[v] = std::max(importance[v], clamp01(weighted));
 	}
 
+
+	// 函数：propagated。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> propagated(importance);
 	for (size_t i = 0; i < edges.size(); ++i)
 	{
+
 		float line_strength = std::max(importance[edges[i].v0], importance[edges[i].v1]);
 		if (line_strength > 0.45f)
 		{
 			float attenuated = line_strength * 0.55f;
+
 			propagated[edges[i].v0] = std::max(propagated[edges[i].v0], attenuated);
+
 			propagated[edges[i].v1] = std::max(propagated[edges[i].v1], attenuated);
 		}
 	}
+
 	importance.swap(propagated);
 
 	if (mesh.vertex_attributes && mesh.attribute_protect_mask && mesh.vertex_attributes_stride)
@@ -285,22 +415,34 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 			}
 
 			if (protected_seam)
+
 				importance[v] = std::max(importance[v], 0.85f);
 		}
 	}
 
 	if (!remap.empty())
 	{
+
+
+		// 函数：representative。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+		// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+		// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 		std::vector<float> representative(mesh.vertex_count, 0.f);
 		for (size_t v = 0; v < mesh.vertex_count; ++v)
+
 			representative[remap[v]] = std::max(representative[remap[v]], importance[v]);
 		for (size_t v = 0; v < mesh.vertex_count; ++v)
+
 			importance[v] = std::max(importance[v], representative[remap[v]]);
 	}
 
 	return importance;
 }
 
+
+// 函数：featureStats。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 static void featureStats(const std::vector<unsigned int>& indices, const std::vector<float>& feature_importance, float& avg, float& max_feature)
 {
 	avg = 0.f;
@@ -317,6 +459,7 @@ static void featureStats(const std::vector<unsigned int>& indices, const std::ve
 		{
 			float feature = feature_importance[v];
 			avg += feature;
+
 			max_feature = std::max(max_feature, feature);
 			if (feature > 0.65f)
 				strong_count += 1.f;
@@ -325,16 +468,24 @@ static void featureStats(const std::vector<unsigned int>& indices, const std::ve
 
 	avg /= float(indices.size());
 	float strong_ratio = strong_count / float(indices.size());
+
 	avg = clamp01(avg * 0.65f + strong_ratio * 0.35f);
 }
 
+
+// 函数：featureAdaptiveTarget。从文件、缓存、GPU 缓冲或共享布局中读取数据并转换为本模块格式。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
 static size_t featureAdaptiveTarget(const clodConfig& config, const std::vector<unsigned int>& indices, const std::vector<float>& feature_importance, size_t target_count)
 {
 	float avg_feature = 0.f;
 	float max_feature = 0.f;
+
 	featureStats(indices, feature_importance, avg_feature, max_feature);
 
+
 	float pressure = clamp01(avg_feature * 0.7f + max_feature * 0.3f);
+
 	float strength = clamp01(config.curvature_adaptive_strength + config.silhouette_preservation);
 	float preserve = 1.f - config.simplify_ratio;
 	size_t relaxed = target_count + size_t(float(indices.size() - target_count) * preserve * strength * pressure);
@@ -343,10 +494,15 @@ static size_t featureAdaptiveTarget(const clodConfig& config, const std::vector<
 	return std::max(target_count, std::min(indices.size(), relaxed));
 }
 
+
+// 函数：applyFeatureLocks。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 static void applyFeatureLocks(const clodConfig& config, const std::vector<unsigned int>& indices, const std::vector<float>& feature_importance, std::vector<unsigned char>& locks)
 {
 	if (feature_importance.empty() || config.silhouette_preservation <= 0.f)
 		return;
+
 
 	float lock_threshold = 1.f - 0.2f * clamp01(config.silhouette_preservation);
 	for (size_t i = 0; i < indices.size(); ++i)
@@ -357,14 +513,32 @@ static void applyFeatureLocks(const clodConfig& config, const std::vector<unsign
 	}
 }
 
+
+// 函数：perceptualError。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 float perceptualError(float geometric_error, float vertex_count, float original_count)
 {
 	return geometric_error * powf(vertex_count / (original_count > 0 ? original_count : 1), 0.3f);
 }
 
+
+// 函数：simplifyFallback。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, size_t target_count, float* error)
 {
+
+
+	// 函数：subset。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<SloppyVertex> subset(indices.size());
+
+
+	// 函数：subset_locks。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<unsigned char> subset_locks(indices.size());
 	lod.resize(indices.size());
 	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
@@ -377,6 +551,7 @@ void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, cons
 		subset[i].id = v;
 
 		subset_locks[i] = locks[v];
+
 		lod[i] = unsigned(i);
 	}
 
@@ -387,21 +562,36 @@ void simplifyFallback(std::vector<unsigned int>& lod, const clodMesh& mesh, cons
 		lod[i] = subset[lod[i]].id;
 }
 
+
+// 函数：simplify。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mesh, const std::vector<unsigned int>& indices, const std::vector<unsigned char>& locks, const std::vector<float>& feature_importance, size_t target_count, float* error)
 {
 	if (target_count > indices.size())
 		return indices;
 
 	size_t positions_stride = mesh.vertex_positions_stride / sizeof(float);
+
 	size_t adaptive_target = featureAdaptiveTarget(config, indices, feature_importance, target_count);
 
 	float avg_feature = 0.f;
 	float max_feature = 0.f;
+
 	featureStats(indices, feature_importance, avg_feature, max_feature);
 
+
+	// 函数：enhanced_locks。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<unsigned char> enhanced_locks(locks);
+
 	applyFeatureLocks(config, indices, feature_importance, enhanced_locks);
 
+
+	// 函数：lod。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<unsigned int> lod(indices.size());
 	unsigned int options = meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute | (config.simplify_permissive ? meshopt_SimplifyPermissive : 0) | (config.simplify_regularize ? meshopt_SimplifyRegularize : 0);
 
@@ -420,6 +610,7 @@ std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mes
 
 	if (lod.size() > adaptive_target && config.simplify_fallback_sloppy && avg_feature < 0.35f)
 	{
+
 		simplifyFallback(lod, mesh, indices, enhanced_locks, adaptive_target, error);
 		*error *= config.simplify_error_factor_sloppy;
 	}
@@ -448,6 +639,11 @@ std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mes
 	if (config.perceptual_weight > 0 && error != nullptr)
 	{
 		float unique_vertices = 0.f;
+
+
+		// 函数：vertex_used。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+		// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+		// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 		std::vector<char> vertex_used(mesh.vertex_count, 0);
 		for (size_t i = 0; i < lod.size(); ++i)
 		{

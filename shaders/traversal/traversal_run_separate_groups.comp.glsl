@@ -1,3 +1,11 @@
+//==============================================================================
+// 文件：shaders/traversal/traversal_run_separate_groups.comp.glsl
+// 模块定位：LOD 遍历着色器，负责从实例层次中选择本帧需要渲染或请求加载的 簇。
+// 数据流：读取实例、几何层次、Hi-Z 和 流式加载 地址，输出 traversal queue、组 queue、render 簇 list 和 request。
+// 方法说明：遍历阶段把屏幕空间误差、视锥剔除和遮挡剔除合并为并行剪枝问题，以减少后续光栅工作量。
+// 正确性约束：队列计数必须原子更新；流式加载 地址无效时只能发请求，不能解引用；two-阶段 状态必须区分上一帧和当前帧 Hi-Z。
+// 注释风格：使用中文解释 GPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
 #version 460
 
 #extension GL_GOOGLE_include_directive : enable
@@ -18,78 +26,134 @@
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_KHR_memory_scope_semantics : require
 
+
+// 依赖说明：引入共享布局、剔除、着色或阶段间复用的着色器片段。
+// 这些 include 共同决定本文件能访问的结构布局、数学辅助函数和编译期宏。
 #include "shaderio.h"
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
 {
   Readback readback;
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderInstancesBuffer
 {
   RenderInstance instances[];
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
 {
   Geometry geometries[];
 };
 
 #if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(binding = BINDINGS_HIZ_TEX) uniform sampler2D texHizFar[2];
 #else
+
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(binding = BINDINGS_HIZ_TEX) uniform sampler2D texHizFar;
 #endif
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {
   SceneBuilding build;
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_SCENEBUILDING_SSBO, set = 0) buffer buildBufferRW
 {
   SceneBuilding buildRW;
 };
 
 #if USE_STREAMING
+
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffer
 {
   SceneStreaming streaming;
 };
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBufferRW
 {
   SceneStreaming streamingRW;
 };
 #endif
 
+
+// 绑定布局说明：声明本阶段访问的描述符、推送常量、输入输出或工作组配置。
+// 这些声明构成 Vulkan pipeline layout 与 GLSL 代码之间的显式契约。
 layout(local_size_x = TRAVERSAL_GROUPS_WORKGROUP) in;
 
 #include "culling.glsl"
 #include "traversal.glsl"
 
-// Work around older drivers mishandling coherent/volatile buffer references.
+
+// 宏配置说明：定义编译期常量或功能开关，让 CPU 与 GPU 按同一套布局和路径工作。
+// 宏值通常会影响 buffer 大小、工作组规模或条件编译分支，修改后需要同时检查 C++ 和着色器侧。
 #define USE_ATOMIC_LOAD_STORE 1
 
 #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+
+
+// 函数：intersectSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
 {
   vec2 rect          = (clipMax.xy - clipMin.xy) * 0.5 * scale * view.viewportf.xy;
+
   vec2 clipThreshold = vec2(threshold);
   return any(greaterThan(rect, clipThreshold));
 }
 
 #if USE_SW_RASTER
+
+
+// 函数：projectedRectPixels。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 vec2 projectedRectPixels(vec4 clipMin, vec4 clipMax)
 {
   return max((clipMax.xy - clipMin.xy) * 0.5 * view.viewportf.xy, vec2(0.0));
 }
 
+
+// 函数：shouldUseSwRaster。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool shouldUseSwRaster(BBox bbox, vec4 clipMin, vec4 clipMax, bool clipValid, uint triangleCount)
 {
   if(!(clipValid && clipMin.z > 0.0 && clipMax.z < 1.0))
@@ -98,18 +162,26 @@ bool shouldUseSwRaster(BBox bbox, vec4 clipMin, vec4 clipMax, bool clipValid, ui
   }
 
 #if USE_ADAPTIVE_SW_RASTER_ROUTING
+
   vec2  rectPixels          = projectedRectPixels(clipMin, clipMax);
+
   float projectedExtentPx   = max(rectPixels.x, rectPixels.y);
+
   float projectedAreaPx     = max(rectPixels.x * rectPixels.y, 1.0);
   float triangleCountF      = max(float(triangleCount), 1.0);
   float triangleDensity     = triangleCountF / projectedAreaPx;
   float avgTrianglePixels   = projectedAreaPx / triangleCountF;
+
   float avgTriangleExtentPx = projectedExtentPx / sqrt(triangleCountF);
 
+
   float extentThreshold     = max(build.swRasterThreshold, 1.0);
+
   float densityThreshold    = max(build.swRasterTriangleDensityThreshold, 1e-4);
   float maxTrianglePixels   = 1.0 / densityThreshold;
+
   float maxTriangleExtentPx = sqrt(maxTrianglePixels);
+
   float maxClusterAreaPx    = max(extentThreshold * extentThreshold, 1.0);
 
   bool smallCluster   = projectedExtentPx <= extentThreshold && projectedAreaPx <= maxClusterAreaPx;
@@ -129,6 +201,10 @@ bool shouldUseSwRaster(BBox bbox, vec4 clipMin, vec4 clipMax, bool clipValid, ui
 }
 #endif
 
+
+// 函数：queryWasVisible。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, out vec4 outClipMin, out vec4 outClipMax, out bool outClipValid)
 {
   vec3 bboxMin = bbox.lo;
@@ -137,6 +213,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, out vec4 outClipMin, o
   vec4 clipMax;
   bool clipValid;
   bool useOcclusion = true;
+
 
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum
@@ -151,6 +228,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, out vec4 outClipMin, o
     }
     else
     {
+
       inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
       isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 1)));
     }
@@ -164,16 +242,23 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, out vec4 outClipMin, o
 }
 #endif
 
+
+// 函数：main。作为本着色器阶段入口，按绑定资源执行当前 GPU 工作。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该入口位于控制流根部，调用顺序决定后续资源生命周期和数据依赖。
 void main()
 {
+
   uint threadReadIndex = getGlobalInvocationIndex(gl_GlobalInvocationID);
   if(threadReadIndex >= min(build.traversalGroupCounter, build.maxTraversalInfos))
   {
     return;
   }
 
+
   TraversalInfo traversalInfo = unpackTraversalInfo(build.traversalGroupInfos.d[threadReadIndex]);
   uint          instanceID    = traversalInfo.instanceID;
+
   uint          groupIndex    = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
   uint          groupClusterCount = PACKED_GET(traversalInfo.packedNode, Node_packed_groupClusterCountMinusOne) + 1;
 
@@ -181,15 +266,19 @@ void main()
   Geometry geometry   = geometries[geometryID];
 
   mat4x3 worldMatrix     = instances[instanceID].worldMatrix;
+
   float  uniformScale    = computeUniformScale(worldMatrix);
   float  errorScale      = 1.0;
   mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * toMat4(worldMatrix));
 
 #if USE_STREAMING
+
   Group_in groupRef = Group_in(geometry.streamingGroupAddresses.d[groupIndex]);
   Group    group    = groupRef.d;
+
   streaming.resident.groups.d[group.residentID].age = uint16_t(0);
 #else
+
   Group_in groupRef = Group_in(geometry.preloadedGroups.d[groupIndex]);
   Group    group    = groupRef.d;
 #endif
@@ -200,8 +289,10 @@ void main()
     bool            isValid        = true;
     TraversalMetric traversalMetric;
 #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+
     BBox bbox = Group_getClusterBBox(groupRef, clusterIndex);
 #endif
+
 
     uint32_t clusterGeneratingGroup = Group_getGeneratingGroup(groupRef, clusterIndex);
 #if USE_STREAMING
@@ -229,8 +320,10 @@ void main()
     vec4 clipMin;
     vec4 clipMax;
     bool clipValid;
+
     isValid = isValid && queryWasVisible(worldMatrix, bbox, clipMin, clipMax, clipValid);
 #endif
+
 
     bool traverse      = testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
     bool renderCluster = isValid && (!traverse || forceCluster);
@@ -241,6 +334,7 @@ void main()
 #else
     uint triangleCount = Cluster_in(geometry.preloadedClusters.d[clusterID]).d.triangleCountMinusOne + 1;
 #endif
+
     bool renderClusterSW = renderCluster && shouldUseSwRaster(bbox, clipMin, clipMax, clipValid, triangleCount);
     if(renderClusterSW)
     {
@@ -251,29 +345,39 @@ void main()
 #endif
 
 #if TARGETS_RASTERIZATION && USE_SW_RASTER
+
     uvec4 voteClustersSW  = subgroupBallot(renderClusterSW);
+
     uint  countClustersSW = subgroupBallotBitCount(voteClustersSW);
     uint  offsetClustersSW = 0;
 #endif
 
+
     uvec4 voteClusters  = subgroupBallot(renderCluster);
+
     uint  countClusters = subgroupBallotBitCount(voteClusters);
     uint  offsetClusters = 0;
 
     if(subgroupElect())
     {
+
       offsetClusters = atomicAdd(buildRW.renderClusterCounter, countClusters);
 #if TARGETS_RASTERIZATION && USE_SW_RASTER
+
       offsetClustersSW = atomicAdd(buildRW.renderClusterCounterSW, countClustersSW);
 #endif
     }
 
+
     offsetClusters = subgroupBroadcastFirst(offsetClusters);
+
     offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
     renderCluster = renderCluster && offsetClusters < build.maxRenderClusters;
 
 #if TARGETS_RASTERIZATION && USE_SW_RASTER
+
     offsetClustersSW = subgroupBroadcastFirst(offsetClustersSW);
+
     offsetClustersSW += subgroupBallotExclusiveBitCount(voteClustersSW);
     renderClusterSW = renderClusterSW && offsetClustersSW < build.maxRenderClusters;
 #endif
@@ -295,8 +399,10 @@ void main()
 #if USE_ATOMIC_LOAD_STORE
       atomicStore(writePointer.d[writeIndex], packTraversalInfo(traversalInfo), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
 #else
+
       writePointer.d[writeIndex] = packTraversalInfo(traversalInfo);
 #endif
+
       memoryBarrierBuffer();
     }
   }

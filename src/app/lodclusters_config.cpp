@@ -1,16 +1,30 @@
+//==============================================================================
+// 文件：src/app/lodclusters_config.cpp
+// 模块定位：构造函数和默认参数注册实现，定义应用可从命令行、配置文件和 UI 调整的主要实验变量。
+// 数据流：输入是 Info 中的参数注册器、解析器和 性能分析器；输出是默认 FrameConfig、SceneConfig、RendererConfig 与 StreamingConfig。
+// 方法说明：该文件把渲染实验的控制变量显式参数化，便于复现实验、批处理序列和性能对比。
+// 正确性约束：默认值必须与 着色器 侧常量和 UI 选项保持一致；新增参数需要同步考虑配置加载、序列化和统计输出。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include "lodclusters.hpp"
 
 bool g_verbose = false;
 
+
+// 命名空间说明：限制符号可见范围，并表明这些类型和函数属于同一功能域。
+// 该边界有助于区分应用层、渲染层、场景层和算法层的职责。
 namespace lodclusters {
 
-// Constructor, command-line parameters, and frame defaults.
 
 LodClusters::LodClusters(const Info& info)
+
     : m_info(info)
 {
   nvutils::ProfilerTimeline::CreateInfo createInfo;
   createInfo.name = "graphics";
+
   m_profilerTimeline = m_info.profilerManager->createTimeline(createInfo);
   m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePathDropNew);
   m_info.parameterRegistry->add({"renderer"}, (int*)&m_tweak.renderer);
@@ -42,14 +56,14 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"lodnodewidth"}, &m_sceneConfig.preferredNodeWidth);
   m_info.parameterRegistry->add({"loddecimationfactor"}, &m_sceneConfig.lodLevelDecimationFactor);
   m_info.parameterRegistry->add({"meshoptfillweight"}, &m_sceneConfig.meshoptFillWeight);
-  /////////////////////////////////////////////
-  //开启lod优化
+
+
   m_info.parameterRegistry->add({ "curvatureadaptive" }, &m_sceneConfig.curvatureAdaptiveStrength);
   m_info.parameterRegistry->add({ "curvaturewindow" }, &m_sceneConfig.curvatureWindowRadius);
   m_info.parameterRegistry->add({ "featureedge" }, &m_sceneConfig.featureEdgeThreshold);
   m_info.parameterRegistry->add({ "perceptualweight" }, &m_sceneConfig.perceptualWeight);
   m_info.parameterRegistry->add({ "silhouettepreserve" }, &m_sceneConfig.silhouettePreservation);
-  ////////////////////////////////////////////////////
+
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"shadowray"}, &m_frameConfig.frameConstants.doShadow);
   m_info.parameterRegistry->add({"maxtransfermegabytes"}, (uint32_t*)&m_streamingConfig.maxTransferMegaBytes);
@@ -60,7 +74,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"maxframeunloadrequests"}, &m_streamingConfig.maxPerFrameUnloadRequests);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
-  //two
+
   m_info.parameterRegistry->add({"primitiveculling"}, &m_rendererConfig.usePrimitiveCulling);
   m_info.parameterRegistry->add({"twopassculling"}, &m_rendererConfig.useTwoPassCulling);
   m_info.parameterRegistry->add({"forcedinvisculling"}, &m_rendererConfig.useForcedInvisibleCulling);
@@ -97,7 +111,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"compressedtexcoordbits"}, &m_sceneConfig.compressionTexDropBits);
   m_info.parameterRegistry->add({"cachesuffix", "default is .zippp"}, &m_sceneCacheSuffix);
   {
-    // HACK as zorah.cfg ships with some deprecated settings
+
     static bool dummy;
     m_info.parameterRegistry->add({"twosided", "deprecated - now detecting doubleSided materials - there is a new forcetwosided"},
                                   &dummy);
@@ -128,4 +142,4 @@ LodClusters::LodClusters(const Info& info)
   m_sceneLoaderConfig.progressPct = &m_sceneProgress;
 }
 
-}  // namespace lodclusters
+}

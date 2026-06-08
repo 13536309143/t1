@@ -1,4 +1,13 @@
-//基类和通用接口
+//==============================================================================
+// 文件：src/renderer/renderer.cpp
+// 模块定位：渲染器公共实现，负责实例数据上传、基础着色器和 管线、背景、bbox 与软件光栅合并绘制。
+// 数据流：输入是 Scene/RenderScene 和资源对象；输出是 render instance 缓冲、基础 管线 和调试绘制命令。
+// 方法说明：公共实现提供所有渲染器共享的观察和合成能力，使核心 LOD renderer 可以专注于 簇 选择与绘制。
+// 正确性约束：实例矩阵、材质和 geometry 映射必须与 Scene active geometry 一致；atomic resolve 只在软件光栅路径启用时有意义。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include <random>
 #include <vector>
 #include <volk.h>
@@ -10,7 +19,14 @@
 #include "shaderio.h"
 
 
+// 命名空间说明：限制符号可见范围，并表明这些类型和函数属于同一功能域。
+// 该边界有助于区分应用层、渲染层、场景层和算法层的职责。
 namespace lodclusters {
+
+
+// 函数：RenderScene::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 bool RenderScene::init(Resources* res, const Scene* scene_, const StreamingConfig& streamingConfig_, bool useStreaming_)
 {
   scene        = scene_;
@@ -26,19 +42,36 @@ bool RenderScene::init(Resources* res, const Scene* scene_, const StreamingConfi
     return scenePreloaded.init(res, scene_, preloadConfig);
   }
 }
+
+
+// 函数：RenderScene::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void RenderScene::deinit()
 {
+
   scenePreloaded.deinit();
+
   sceneStreaming.deinit();
 }
+
+
+// 函数：RenderScene::streamingReset。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void RenderScene::streamingReset()
 {
   if(useStreaming)
   {
+
     sceneStreaming.reset();
   }
 }
 
+
+// 函数：RenderScene::getShaderGeometriesBuffer。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 const nvvk::BufferTyped<shaderio::Geometry>& RenderScene::getShaderGeometriesBuffer() const
 {
 
@@ -49,7 +82,9 @@ const nvvk::BufferTyped<shaderio::Geometry>& RenderScene::getShaderGeometriesBuf
 }
 
 
-
+// 函数：RenderScene::getGeometrySize。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 size_t RenderScene::getGeometrySize(bool reserved) const
 {
   if(useStreaming)
@@ -58,6 +93,10 @@ size_t RenderScene::getGeometrySize(bool reserved) const
     return scenePreloaded.getGeometrySize();
 }
 
+
+// 函数：RenderScene::getOperationsSize。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 size_t RenderScene::getOperationsSize() const
 {
   if(useStreaming)
@@ -65,6 +104,11 @@ size_t RenderScene::getOperationsSize() const
   else
     return scenePreloaded.getOperationsSize();
 }
+
+
+// 函数：Renderer::initBasicShaders。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
   uint32_t maxPrimitiveOutputs = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputPrimitives :
@@ -88,18 +132,26 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
       std::min(m_meshShaderWorkgroupSize / MESHSHADER_BBOX_THREADS,
                std::min(maxPrimitiveOutputs / MESHSHADER_BBOX_LINES, maxVertexOutputs / MESHSHADER_BBOX_VERTICES));
 
+
   shaderc::CompileOptions options = res.makeCompilerOptions();
   options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("USE_STREAMING", fmt::format("{}", rscene.useStreaming ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
 
+
   res.compileShader(m_basicShaders.fullScreenVertexShader, VK_SHADER_STAGE_VERTEX_BIT, "post/fullscreen.vert.glsl");
+
   res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "post/fullscreen_background.frag.glsl");
+
   res.compileShader(m_basicShaders.fullscreenAtomicRasterFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT, "post/fullscreen_atomic.frag.glsl");
+
   res.compileShader(m_basicShaders.renderInstanceBboxesMeshShader, VK_SHADER_STAGE_MESH_BIT_NV,"debug/render_instance_bbox.mesh.glsl", &options);
+
   res.compileShader(m_basicShaders.renderInstanceBboxesFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT, "debug/render_instance_bbox.frag.glsl");
+
   res.compileShader(m_basicShaders.renderClusterBboxesMeshShader, VK_SHADER_STAGE_MESH_BIT_NV,"debug/render_cluster_bbox.mesh.glsl", &options);
+
   res.compileShader(m_basicShaders.renderClusterBboxesFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT, "debug/render_cluster_bbox.frag.glsl");
   if(!res.verifyShaders(m_basicShaders))
   {
@@ -108,8 +160,14 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
 
   return true;
 }
+
+
+// 函数：Renderer::initBasics。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
+
   initBasicPipelines(res, rscene, config);
 
   const Scene& scene = *rscene.scene;
@@ -120,13 +178,17 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
   {
     shaderio::RenderInstance&  renderInstance = m_renderInstances[i];
     const Scene::Instance&     sceneInstance  = scene.m_instances[i];
+
     const Scene::GeometryView& geometry       = scene.getActiveGeometry(sceneInstance.geometryID);
     renderInstance                = {};
+
     renderInstance.worldMatrix    = glm::mat4x3(sceneInstance.matrix);
     renderInstance.worldMatrixI   = glm::mat4x3(glm::inverse(sceneInstance.matrix));
     renderInstance.geometryID     = sceneInstance.geometryID;
+
     renderInstance.materialID     = uint16_t(sceneInstance.materialID);
     renderInstance.maxLodLevelRcp = geometry.lodLevelsCount > 1 ? 1.0f / float(geometry.lodLevelsCount - 1) : 0.0f;
+
     renderInstance.packedColor    = glm::packUnorm4x8(sceneInstance.color);
     renderInstance.twoSided       = sceneInstance.twoSided ? 1 : 0;
     renderInstance.flipWinding =
@@ -135,6 +197,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
   NVVK_DBG_NAME(m_renderInstanceBuffer.buffer);
   res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
   if(config.useSorting)
@@ -142,21 +205,37 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     VrdxSorterStorageRequirements sorterRequirements = {};
     vrdxGetSorterKeyValueStorageRequirements(res.m_vrdxSorter, uint32_t(m_renderInstances.size()), &sorterRequirements);
 
+
     res.createBuffer(m_sortingAuxBuffer, sorterRequirements.size, sorterRequirements.usage);
+
     NVVK_DBG_NAME(m_sortingAuxBuffer.buffer);
+
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sortingAuxBuffer.bufferSize, "operations", "traversal sorting");
   }
 }
 
+
+// 函数：Renderer::deinitBasics。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void Renderer::deinitBasics(Resources& res)
 {
+
   res.destroyPipelines(m_basicPipelines);
+
   vkDestroyPipelineLayout(res.m_device, m_basicPipelineLayout, nullptr);
+
   m_basicDset.deinit();
+
   res.m_allocator.destroyBuffer(m_renderInstanceBuffer);
+
   res.m_allocator.destroyBuffer(m_sortingAuxBuffer);
 }
 
+
+// 函数：Renderer::updateBasicDescriptors。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const nvvk::Buffer* sceneBuildBuffer)
 {
   nvvk::WriteSetContainer writeSets;
@@ -175,21 +254,34 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const
   }
   vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
 }
+
+
+// 函数：Renderer::initBasicPipelines。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
   m_basicShaderFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT;
 
   nvvk::DescriptorBindings bindings;
+
   bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
+
   bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+
   bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
+
   bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+
   bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+
   bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
   if(rscene.useStreaming)
   {
+
     bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
   }
+
   m_basicDset.init(bindings, res.m_device);
 
   nvvk::createPipelineLayout(res.m_device, &m_basicPipelineLayout, {m_basicDset.getLayout()},
@@ -201,48 +293,73 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   graphicsGen.renderingState.depthAttachmentFormat   = res.m_frameBuffer.pipelineRenderingInfo.depthAttachmentFormat;
   graphicsGen.renderingState.stencilAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.stencilAttachmentFormat;
   graphicsGen.colorFormats                           = {res.m_frameBuffer.colorFormat};
+
   state.rasterizationState.lineWidth = float(res.m_frameBuffer.pixelScale * 2.0f);
+
   graphicsGen.clearShaders();
   graphicsGen.addShader(VK_SHADER_STAGE_MESH_BIT_NV, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderInstanceBboxesMeshShader));
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderInstanceBboxesFragmentShader));
+
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.renderInstanceBboxes);
+
   graphicsGen.clearShaders();
+
   state.rasterizationState.lineWidth = float(res.m_frameBuffer.pixelScale);
   graphicsGen.addShader(VK_SHADER_STAGE_MESH_BIT_NV, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderClusterBboxesMeshShader));
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderClusterBboxesFragmentShader));
+
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.renderClusterBboxes);
   state.depthStencilState.depthWriteEnable = VK_TRUE;
   state.depthStencilState.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
   state.rasterizationState.cullMode        = VK_CULL_MODE_NONE;
+
   graphicsGen.clearShaders();
   graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenBackgroundFragShader));
+
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.background);
+
   graphicsGen.clearShaders();
   graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullscreenAtomicRasterFragmentShader));
+
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
 }
+
+
+// 函数：Renderer::renderInstanceBboxes。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
 {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
+
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderInstanceBboxes);
   uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &numRenderInstances);
   uint32_t workGroupCount = (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes;
   if(m_config.useEXTmeshShader)
   {
+
     glm::uvec3 grid = shaderio::fit16bitLaunchGrid(workGroupCount);
+
     vkCmdDrawMeshTasksEXT(cmd, grid.x, grid.y, grid.z);
   }
   else
   {
+
     vkCmdDrawMeshTasksNV(cmd, workGroupCount, 0);
   }
 }
+
+
+// 函数：Renderer::renderClusterBboxes。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void Renderer::renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer)
 {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
+
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderClusterBboxes);
 
   if(m_config.useEXTmeshShader)
@@ -256,20 +373,34 @@ void Renderer::renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildB
                                  offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesNV), 1, 0);
   }
 }
+
+
+// 函数：Renderer::writeAtomicRaster。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void Renderer::writeAtomicRaster(VkCommandBuffer cmd)
 {
   uint32_t dummy = 0;
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &dummy);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
+
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.atomicRaster);
+
   vkCmdDraw(cmd, 3, 1, 0, 0);
 }
+
+
+// 函数：Renderer::writeBackgroundSky。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void Renderer::writeBackgroundSky(VkCommandBuffer cmd)
 {
   uint32_t dummy = 0;
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &dummy);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
+
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.background);
+
   vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 }

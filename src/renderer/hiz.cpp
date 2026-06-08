@@ -1,38 +1,70 @@
-//层级 Z-Buffer（Hi-Z Map）的生成
+//==============================================================================
+// 文件：src/renderer/hiz.cpp
+// 模块定位：Hi-Z 生成器实现，创建 mip view、更新描述符并 调度 计算着色器生成层级深度。
+// 数据流：输入是当前深度图和配置；输出是 near/far 层级深度纹理。
+// 方法说明：计算着色器逐层归约深度，使后续遍历可在 簇 或 bbox 粒度快速判定遮挡。
+// 正确性约束：源深度图 layout 必须可采样；每层 image view 要在图像销毁前释放；调度 尺寸覆盖所有目标 mip texel。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include <cassert>
 #include <volk.h>
 #include <fmt/format.h>
 #include "hiz.hpp"
 static const VkFormat NVHIZ_FORMAT = VK_FORMAT_R32_SFLOAT;
 
+
+// 函数：NVHizVK::TextureInfo::getShaderFactors。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void NVHizVK::TextureInfo::getShaderFactors(float factors[4]) const
 {
+
   factors[0] = float(usedWidth) / float(width);
+
   factors[1] = float(usedHeight) / float(height);
+
   factors[2] = float(usedWidth - 2) / float(width);
+
   factors[3] = float(usedHeight - 2) / float(height);
 }
 
+
+// 函数：NVHizVK::TextureInfo::getSizeMax。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 float NVHizVK::TextureInfo::getSizeMax() const
 {
   return float(std::max(width, height));
 }
 
+
+// 函数：NVHizVK::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void NVHizVK::deinit()
 {
   if(!m_device)
     return;
 
+
   deinitPipelines();
 
+
   vkDestroySampler(m_device, m_readDepthSampler, nullptr);
+
   vkDestroySampler(m_device, m_readFarSampler, nullptr);
+
   vkDestroySampler(m_device, m_readNearSampler, nullptr);
+
   vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
+
   vkDestroyDescriptorSetLayout(m_device, m_descrLayout, nullptr);
 
   if(m_descrSetsCount)
   {
+
     vkDestroyDescriptorPool(m_device, m_descrPool, nullptr);
     delete[] m_descrSets;
   }
@@ -41,8 +73,12 @@ void NVHizVK::deinit()
 }
 
 
+// 函数：NVHizVK::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCount)
 {
+
   deinit();
 
   VkResult result;
@@ -83,21 +119,27 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
 
     info.pNext = !m_config.msaaSamples && m_config.supportsMinmaxFilter ? &infoReduc : nullptr;
 
+
     result = vkCreateSampler(m_device, &info, nullptr, &m_readDepthSampler);
+
     assert(result == VK_SUCCESS);
 
     info.pNext     = m_config.supportsMinmaxFilter ? &infoReduc : nullptr;
     info.minFilter = VK_FILTER_LINEAR;
     info.magFilter = VK_FILTER_LINEAR;
 
+
     result = vkCreateSampler(m_device, &info, nullptr, &m_readFarSampler);
+
     assert(result == VK_SUCCESS);
 
     info.pNext      = nullptr;
     info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     info.minFilter  = VK_FILTER_NEAREST;
     info.magFilter  = VK_FILTER_NEAREST;
+
     result          = vkCreateSampler(m_device, &info, nullptr, &m_readNearSampler);
+
     assert(result == VK_SUCCESS);
   }
 
@@ -128,14 +170,16 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     info.bindingCount                    = BINDING_COUNT;
     info.pBindings                       = bindings;
 
+
     result = vkCreateDescriptorSetLayout(m_device, &info, nullptr, &m_descrLayout);
+
     assert(result == VK_SUCCESS);
-    //描述符集的数量动态计算
+
     m_poolSizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    //m_poolSizes[0].descriptorCount = 2;
+
     m_poolSizes[0].descriptorCount = std::max(m_descrSetsCount, 1u) * 2;
     m_poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    //m_poolSizes[1].descriptorCount = 1 + MAX_MIP_LEVELS;
+
     m_poolSizes[1].descriptorCount = std::max(m_descrSetsCount, 1u) * (1 + MAX_MIP_LEVELS);
   }
 
@@ -147,7 +191,9 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     info.poolSizeCount              = 2;
     info.pPoolSizes                 = m_poolSizes;
     info.maxSets                    = m_descrSetsCount;
+
     result                          = vkCreateDescriptorPool(m_device, &info, nullptr, &m_descrPool);
+
     assert(result == VK_SUCCESS);
 
     VkDescriptorSetLayout* setLayouts = new VkDescriptorSetLayout[m_descrSetsCount];
@@ -160,7 +206,9 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     allocateInfo.descriptorPool              = m_descrPool;
     allocateInfo.descriptorSetCount          = m_descrSetsCount;
     allocateInfo.pSetLayouts                 = setLayouts;
+
     result                                   = vkAllocateDescriptorSets(m_device, &allocateInfo, m_descrSets);
+
     assert(result == VK_SUCCESS);
 
     delete[] setLayouts;
@@ -178,31 +226,50 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     info.pPushConstantRanges        = &range;
     info.pushConstantRangeCount     = 1;
 
+
     result = vkCreatePipelineLayout(m_device, &info, nullptr, &m_pipelineLayout);
+
     assert(result == VK_SUCCESS);
   }
 }
 
+
+// 函数：NVHizVK::getReadFarSampler。从文件、缓存、GPU 缓冲或共享布局中读取数据并转换为本模块格式。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
 VkSampler NVHizVK::getReadFarSampler() const
 {
   return m_readFarSampler;
 }
 
+
+// 函数：NVHizVK::getDescriptorPoolSizes。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 const VkDescriptorPoolSize* NVHizVK::getDescriptorPoolSizes(uint32_t& count) const
 {
   count = POOLSIZE_COUNT;
   return m_poolSizes;
 }
 
+
+// 函数：NVHizVK::getDescriptorSetLayout。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 VkDescriptorSetLayout NVHizVK::getDescriptorSetLayout() const
 {
   return m_descrLayout;
 }
 
+
+// 函数：NVHizVK::appendShaderDefines。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void NVHizVK::appendShaderDefines(uint32_t shader, shaderc::CompileOptions& options) const
 {
   ProgHizMode  hiz;
   ProgViewMode view;
+
   getShaderIndexConfig(shader, hiz, view);
 
   options.AddMacroDefinition("NV_HIZ_LEVELS", std::to_string(m_config.hizLevels));
@@ -215,6 +282,10 @@ void NVHizVK::appendShaderDefines(uint32_t shader, shaderc::CompileOptions& opti
   options.AddMacroDefinition("NV_HIZ_USE_STEREO", std::to_string(view == PROG_VIEW_STEREO ? 1u : 0u));
 }
 
+
+// 函数：NVHizVK::deinitPipelines。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void NVHizVK::deinitPipelines()
 {
   if(!m_device)
@@ -225,19 +296,26 @@ void NVHizVK::deinitPipelines()
 
   for(uint32_t i = 0; i < SHADER_COUNT; i++)
   {
+
     vkDestroyPipeline(m_device, m_pipelines[i], nullptr);
   }
 
   memset(&m_pipelines, 0, sizeof(m_pipelines));
 }
 
+
+// 函数：NVHizVK::initPipelines。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void NVHizVK::initPipelines(const shaderc::SpvCompilationResult spvResults[SHADER_COUNT])
 {
+
   deinitPipelines();
 
   for(uint32_t i = 0; i < SHADER_COUNT; i++)
   {
     VkComputePipelineCreateInfo info       = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+
     VkShaderModuleCreateInfo    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(spvResults[i]);
 
     info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -246,13 +324,19 @@ void NVHizVK::initPipelines(const shaderc::SpvCompilationResult spvResults[SHADE
     info.stage.pName = "main";
     info.layout      = m_pipelineLayout;
     VkResult result;
+
     result = vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines[i]);
+
     assert(result == VK_SUCCESS);
 
     std::ignore = result;
   }
 }
 
+
+// 函数：NVHizVK::setupUpdateInfos。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void NVHizVK::setupUpdateInfos(Update& update, uint32_t width, uint32_t height, VkFormat sourceFormat, VkImageAspectFlags sourceAspect) const
 {
   {
@@ -303,6 +387,10 @@ void NVHizVK::setupUpdateInfos(Update& update, uint32_t width, uint32_t height, 
   update.nearImageInfo.sampler     = m_readNearSampler;
 }
 
+
+// 函数：NVHizVK::setupDescriptorUpdate。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void NVHizVK::setupDescriptorUpdate(DescriptorUpdate& write, const Update& update, VkDescriptorSet set) const
 {
   for(uint32_t i = 0; i < BINDING_COUNT; i++)
@@ -357,15 +445,26 @@ void NVHizVK::setupDescriptorUpdate(DescriptorUpdate& write, const Update& updat
   }
 }
 
+
+// 函数：NVHizVK::updateDescriptorSet。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 void NVHizVK::updateDescriptorSet(const Update& update, uint32_t setIdx) const
 {
   DescriptorUpdate write;
+
   setupDescriptorUpdate(write, update, m_descrSets[setIdx]);
+
   vkUpdateDescriptorSets(m_device, BINDING_COUNT, write.writeSets, 0, nullptr);
 }
 
+
+// 函数：NVHizVK::initUpdateViews。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void NVHizVK::initUpdateViews(Update& update) const
 {
+
   deinitUpdateViews(update);
 
   VkResult              result;
@@ -385,6 +484,7 @@ void NVHizVK::initUpdateViews(Update& update) const
   info.subresourceRange.baseMipLevel = 0;
   info.subresourceRange.levelCount   = 1;
 
+
   result = vkCreateImageView(m_device, &info, nullptr, &update.sourceImageView);
 
      info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -392,6 +492,7 @@ void NVHizVK::initUpdateViews(Update& update) const
      info.image                       = update.farImage;
   info.format                      = update.farInfo.format;
   info.subresourceRange.levelCount = update.farInfo.mipLevels;
+
 
   result = vkCreateImageView(m_device, &info, nullptr, &update.farImageView);
 
@@ -401,6 +502,7 @@ void NVHizVK::initUpdateViews(Update& update) const
     info.format                        = update.farInfo.format;
     info.subresourceRange.baseMipLevel = i < update.farInfo.mipLevels ? i : std::max(update.farInfo.mipLevels, 1U) - 1;
     info.subresourceRange.levelCount   = 1;
+
 
     result = vkCreateImageView(m_device, &info, nullptr, &update.farImageViews[i]);
   }
@@ -412,6 +514,7 @@ void NVHizVK::initUpdateViews(Update& update) const
     info.subresourceRange.baseMipLevel = 0;
     info.subresourceRange.levelCount   = 1;
 
+
     result = vkCreateImageView(m_device, &info, nullptr, &update.nearImageView);
   }
 
@@ -421,6 +524,10 @@ void NVHizVK::initUpdateViews(Update& update) const
   std::ignore = result;
 }
 
+
+// 函数：NVHizVK::deinitUpdateViews。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void NVHizVK::deinitUpdateViews(Update& update) const
 {
   if(!m_device)
@@ -428,18 +535,21 @@ void NVHizVK::deinitUpdateViews(Update& update) const
 
   if(update.sourceImageView)
   {
+
     vkDestroyImageView(m_device, update.sourceImageView, nullptr);
     update.sourceImageView = nullptr;
   }
 
   if(update.nearImageView)
   {
+
     vkDestroyImageView(m_device, update.nearImageView, nullptr);
     update.nearImageView = nullptr;
   }
 
   if(update.farImageView)
   {
+
     vkDestroyImageView(m_device, update.farImageView, nullptr);
     update.farImageView = nullptr;
   }
@@ -448,12 +558,17 @@ void NVHizVK::deinitUpdateViews(Update& update) const
   {
     if(update.farImageViews[i])
     {
+
       vkDestroyImageView(m_device, update.farImageViews[i], nullptr);
       update.farImageViews[i] = nullptr;
     }
   }
 }
 
+
+// 函数：NVHizVK::cmdUpdateHiz。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 void NVHizVK::cmdUpdateHiz(VkCommandBuffer cmd, const Update& update, VkDescriptorSet set) const
 {
   uint32_t inputW = update.sourceInfo.usedWidth;
@@ -472,6 +587,7 @@ void NVHizVK::cmdUpdateHiz(VkCommandBuffer cmd, const Update& update, VkDescript
      || (update.nearImageView
          && (halfW != update.nearInfo.usedWidth * nearMultiplier || halfH != update.nearInfo.usedHeight * nearMultiplier)))
   {
+
     assert(0);
   }
 
@@ -482,6 +598,7 @@ void NVHizVK::cmdUpdateHiz(VkCommandBuffer cmd, const Update& update, VkDescript
 
   uint32_t viewCount = viewMode == PROG_VIEW_STEREO ? 2 : 1;
   uint32_t mips      = update.farInfo.mipLevels;
+
 
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &set, 0, nullptr);
 
@@ -566,8 +683,8 @@ void NVHizVK::cmdUpdateHiz(VkCommandBuffer cmd, const Update& update, VkDescript
     inputH = subH * 2;
   }
 
-  // 使用更精确的屏障，只针对需要的资源进行同步
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-                       VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 
+
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr,
                        update.nearImageView ? 2 : 1, imageBarriers);
 }

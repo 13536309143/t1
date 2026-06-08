@@ -1,4 +1,13 @@
-//锟斤拷锟斤拷锟斤拷图锟斤拷锟
+//==============================================================================
+// 文件：src/scene/scene_gltf.cpp
+// 模块定位：glTF 导入实现，通过 cgltf 读取几何、材质、相机、节点层级和 meshopt 压缩 缓冲 view。
+// 数据流：输入是 glTF/glb 文件和 SceneLoaderConfig；输出是去重后的 GeometryStorage、材质索引、实例矩阵和相机列表。
+// 方法说明：glTF 是语义丰富但渲染布局松散的交换格式，本文件将 accessor、缓冲 view 和 node transform 规约为项目内部统一表示。
+// 正确性约束：accessor 类型和 stride 必须严格校验；压缩 view 的生命周期要覆盖读取过程；坐标、法线、切线和 UV 量化需与后续压缩一致。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include <float.h>
 #include <unordered_map>
 #include <string>
@@ -13,17 +22,25 @@
 #include "scene.hpp"
 
 namespace {
+
+
+// 类型：SpinLock。封装本模块的长期状态、资源所有权和对外操作接口。
+// 设计意图：通过成员函数集中维护状态转移，避免调用方直接拼接底层资源生命周期。
+// 使用约束：实例初始化、每帧使用和释放应遵守声明顺序对应的依赖关系。
 class SpinLock
 {
 public:
+
   SpinLock(std::atomic_uint32_t& reference)
+
       : m_reference(reference)
   {
     while(m_reference.exchange(1, std::memory_order_acquire) == 1)
     {
-      // Spin-wait with pause instruction
+
       while(m_reference.load(std::memory_order_relaxed) == 1)
       {
+
         std::this_thread::yield();
       }
     }
@@ -35,8 +52,17 @@ private:
   std::atomic_uint32_t& m_reference;
 };
 
+
+// 结构：FileMappingList。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。
+// 设计意图：把同一抽象对象的计数、偏移、地址和配置集中存放，降低跨函数传递时的语义丢失。
+// 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
 struct FileMappingList
 {
+
+
+  // 结构：Entry。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。
+  // 设计意图：把同一抽象对象的计数、偏移、地址和配置集中存放，降低跨函数传递时的语义丢失。
+  // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
   struct Entry
   {
     nvutils::FileReadMapping mapping;
@@ -48,18 +74,28 @@ struct FileMappingList
   int64_t m_openBias = 0;
 #endif
 
+
+  // 函数：open。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+  // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+  // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
   bool open(const char* path, size_t* size, void** data)
   {
 #ifndef NDEBUG
     m_openBias++;
 #endif
 
+
+    // 函数：pathStr。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+    // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+    // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
     std::string pathStr(path);
+
 
     auto it = m_nameToMapping.find(pathStr);
     if(it != m_nameToMapping.end())
     {
       *data = const_cast<void*>(it->second.mapping.data());
+
       *size = it->second.mapping.size();
       it->second.refCount++;
       return true;
@@ -68,8 +104,10 @@ struct FileMappingList
     Entry entry;
     if(entry.mapping.open(path))
     {
+
       const void* mappingData = entry.mapping.data();
       *data                   = const_cast<void*>(mappingData);
+
       *size                   = entry.mapping.size();
       m_dataToName.insert({mappingData, pathStr});
       m_nameToMapping.insert({pathStr, std::move(entry)});
@@ -79,14 +117,20 @@ struct FileMappingList
     return false;
   }
 
+
+  // 函数：close。释放或回收前面初始化的资源，保持生命周期成对管理。
+  // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+  // 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
   void close(void* data)
   {
 #ifndef NDEBUG
     m_openBias--;
 #endif
+
     auto itName = m_dataToName.find(data);
     if(itName != m_dataToName.end())
     {
+
       auto itMapping = m_nameToMapping.find(itName->second);
       if(itMapping != m_nameToMapping.end())
       {
@@ -94,16 +138,20 @@ struct FileMappingList
 
         if(!itMapping->second.refCount)
         {
+
           m_nameToMapping.erase(itMapping);
+
           m_dataToName.erase(itName);
         }
       }
     }
   }
 
+
   ~FileMappingList()
   {
 #ifndef NDEBUG
+
     assert(m_openBias == 0 && "open/close bias wrong");
 #endif
     assert(m_nameToMapping.empty() && m_dataToName.empty() && "not all opened files were closed");
@@ -125,12 +173,22 @@ cgltf_result cgltf_read(const struct cgltf_memory_options* memory_options,
   return cgltf_result_io_error;
 }
 
+
+// 函数：cgltf_release。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void cgltf_release(const struct cgltf_memory_options* memory_options, const struct cgltf_file_options* file_options, void* data)
 {
   FileMappingList* mappings = (FileMappingList*)file_options->user_data;
+
   mappings->close(data);
 }
 using unique_cgltf_ptr = std::unique_ptr<cgltf_data, decltype(&cgltf_free)>;
+
+
+// 函数：quantizeFloat。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 inline float quantizeFloat(float value, uint32_t dropBits)
 {
   union
@@ -154,41 +212,70 @@ inline float quantizeFloat(float value, uint32_t dropBits)
   return un.f32;
 }
 
+
+// 函数：quantizeFloat。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 inline glm::vec2 quantizeFloat(const glm::vec2& vec, uint32_t dropBits)
 {
   glm::vec2 res;
+
   res.x = quantizeFloat(vec.x, dropBits);
+
   res.y = quantizeFloat(vec.y, dropBits);
   return res;
 }
 
+
+// 函数：quantizeFloat。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 inline glm::vec3 quantizeFloat(const glm::vec3& vec, uint32_t dropBits)
 {
   glm::vec3 res;
+
   res.x = quantizeFloat(vec.x, dropBits);
+
   res.y = quantizeFloat(vec.y, dropBits);
+
   res.z = quantizeFloat(vec.z, dropBits);
   return res;
 }
 
+
+// 函数：quantizeFloat。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 inline glm::vec4 quantizeFloat(const glm::vec4& vec, uint32_t dropBits)
 {
   glm::vec4 res;
+
   res.x = quantizeFloat(vec.x, dropBits);
+
   res.y = quantizeFloat(vec.y, dropBits);
+
   res.z = quantizeFloat(vec.z, dropBits);
+
   res.w = quantizeFloat(vec.w, dropBits);
   return res;
 }
-}  // namespace
+}
 
 
+// 命名空间说明：限制符号可见范围，并表明这些类型和函数属于同一功能域。
+// 该边界有助于区分应用层、渲染层、场景层和算法层的职责。
 namespace lodclusters {
+
+
+// 函数：Scene::loadGLTF。从文件、缓存、GPU 缓冲或共享布局中读取数据并转换为本模块格式。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
 Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
 {
+
   std::string fileName = nvutils::utf8FromPath(filePath);
 
-  // Parse the glTF file using cgltf
+
   cgltf_options options = {};
 
   FileMappingList mappings;
@@ -197,15 +284,17 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   options.file.user_data = &mappings;
 
   cgltf_result     cgltfResult;
+
   unique_cgltf_ptr gltf = unique_cgltf_ptr(nullptr, &cgltf_free);
   {
-    // We have this local pointer followed by an ownership transfer here
-    // because cgltf_parse_file takes a pointer to a pointer to cgltf_data.
+
+
     cgltf_data* rawData = nullptr;
     cgltfResult         = cgltf_parse_file(&options, fileName.c_str(), &rawData);
+
     gltf                = unique_cgltf_ptr(rawData, &cgltf_free);
   }
-  // Check for errors; special message for legacy files
+
   if(cgltfResult == cgltf_result_legacy_gltf)
   {
     LOGE(
@@ -219,7 +308,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     return SCENE_RESULT_ERROR;
   }
 
-  // Perform additional validation.
+
   cgltfResult = cgltf_validate(gltf.get());
   if(cgltfResult != cgltf_result_success)
   {
@@ -231,10 +320,10 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     return SCENE_RESULT_ERROR;
   }
 
-  // if we are loading from a cache file, we don't need any of the raw buffers
+
   if(!m_cacheFileView.isValid())
   {
-    // For now, also tell cgltf to go ahead and load all buffers.
+
     cgltfResult = cgltf_load_buffers(&options, gltf.get(), fileName.c_str());
     if(cgltfResult != cgltf_result_success)
     {
@@ -246,14 +335,15 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     }
   }
 
-  // glTF doesn't have trivial instancing of meshes with different materials.
-  // We need to detect meshes with identical primitive/accessor setups first,
-  // these become our unique geometries that we can then instance under different
-  // materials as well.
 
   std::vector<size_t> geometryToMesh;
   std::vector<size_t> geometryTriangleCount;
   std::vector<size_t> taskToGeometry;
+
+
+  // 函数：meshToGeometry。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+  // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+  // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
   std::vector<size_t> meshToGeometry(gltf->meshes_count, -1);
 
   uint64_t totalTriangleCount = 0;
@@ -285,6 +375,10 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
           continue;
         }
 
+
+        // 结构：MeshAccessors。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。
+        // 设计意图：把同一抽象对象的计数、偏移、地址和配置集中存放，降低跨函数传递时的语义丢失。
+        // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
         struct MeshAccessors
         {
           const void* pos    = nullptr;
@@ -319,19 +413,23 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         meshTriangleCount += gltfPrim->indices->count / 3;
         totalTriangleCount += gltfPrim->indices->count / 3;
 
-        // just serialize the pointer values as identifier for the mesh
+
         meshIdentifier +=
             fmt::format("{},{},{},{},", meshAccessors.pos, meshAccessors.normal, meshAccessors.index, meshAccessors.tex);
       }
 
-      // find canonical string in map
+
       auto pair = mapMeshToGeometry.try_emplace(meshIdentifier, geometryToMesh.size());
       if(pair.second)
       {
+
         size_t geometryIndex      = geometryToMesh.size();
         meshToGeometry[meshIndex] = geometryIndex;
+
         geometryToMesh.push_back(meshIndex);
+
         taskToGeometry.push_back(geometryIndex);
+
         geometryTriangleCount.push_back(meshTriangleCount);
         geometryMemoryEstimate += meshMemoryEstimate;
       }
@@ -354,6 +452,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   if(!m_cacheFileView.isValid())
   {
+
     processingInfo.setupCompressedGltf(gltf->buffer_views_count);
   }
   processingInfo.setupParallelism(geometryToMesh.size(), m_processingOnlyPartialCompleted, m_loaderConfig.processingMode);
@@ -366,32 +465,39 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   auto fnLoadAndProcessGeometry = [&](uint64_t taskIndex, uint32_t threadOuterIdx) {
     uint64_t geometryIndex = taskToGeometry[taskIndex];
-    // map back from unique geometry to gltf mesh
+
     size_t meshIndex = geometryToMesh[geometryIndex];
 
     loadGeometryGLTF(processingInfo, geometryIndex, meshIndex, gltf.get());
   };
+
   processingInfo.logBegin(m_processingOnlyPartialFile ? 0 : totalTriangleCount);
   if(m_loaderConfig.progressPct)
   {
+
     m_loaderConfig.progressPct->store(0);
   }
 
   nvutils::parallel_batches_pooled<1>(geometryToMesh.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
+
   processingInfo.logEnd();
   if(m_loaderConfig.progressPct)
   {
+
     m_loaderConfig.progressPct->store(100);
   }
+
 
   bool notCompleted = processingInfo.progressGeometriesCompleted != geometryToMesh.size();
   if(notCompleted)
   {
+
     LOGW("Error in processing geometries, completed / required mismatch\nTry using `--processingonly 1`\n");
   }
   else
   {
+
     computeHistogramMaxs();
   }
 
@@ -431,11 +537,18 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       {
         Camera cam{};
         cam.fovy = gltf->nodes[nodeIdx].camera->data.perspective.yfov;
+
+
+        // 函数：worldNodeTransform。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+        // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+        // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
         glm::mat4 worldNodeTransform(1);
         cgltf_node_transform_world(&gltf->nodes[nodeIdx], glm::value_ptr(cam.worldMatrix));
+
         cam.eye    = glm::vec3(cam.worldMatrix[3]);
         cam.center = (m_bbox.hi + m_bbox.lo) * 0.5f;
         cam.up     = {0, 1, 0};
+
         m_cameras.push_back(cam);
       }
     }
@@ -450,11 +563,16 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
 {
   if(node == nullptr)
     return;
+
+
+  // 函数：localNodeTransform。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+  // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+  // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
   glm::mat4 localNodeTransform(1);
   cgltf_node_transform_local(node, glm::value_ptr(localNodeTransform));
   const glm::mat4 nodeObjToWorldTransform = parentObjToWorldTransform * localNodeTransform;
 
-  // If this node has a mesh, add instances for its primitives.
+
   if(node->mesh != nullptr)
   {
     lodclusters::Scene::Instance instance{};
@@ -464,6 +582,7 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
 
     if(material)
     {
+
       instance.materialID = uint32_t(material - data->materials);
       if(material->unlit || material->has_pbr_metallic_roughness)
       {
@@ -493,6 +612,7 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
 
     if(addInstance)
     {
+
       instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
       instance.matrix     = nodeObjToWorldTransform;
 
@@ -503,14 +623,16 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
         m_hasTwoSided = true;
       }
 
+
       m_instances.push_back(instance);
     }
   }
 
-  // Recurse over any children of this node.
+
   const size_t numChildren = node->children_count;
   for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
   {
+
     addInstancesFromNodeGLTF(meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform);
   }
 }
@@ -526,13 +648,16 @@ bool Scene::loadCompressedViewsGLTF(ProcessingInfo&                             
   {
     size_t bufferViewIndex = bufferView - gltf->buffer_views;
 
+
+    // 函数：lock。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+    // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+    // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
     SpinLock lock((std::atomic_uint32_t&)processingInfo.bufferViewLocks[bufferViewIndex]);
 
     uint32_t users = processingInfo.bufferViewUsers[bufferViewIndex];
     if(users == 0)
     {
-      // this decoding logic was derived from `decompressMeshopt`
-      // in https://github.com/zeux/meshoptimizer/blob/master/gltf/parsegltf.cpp
+
 
       cgltf_meshopt_compression* mc = &bufferView->meshopt_compression;
 
@@ -540,6 +665,7 @@ bool Scene::loadCompressedViewsGLTF(ProcessingInfo&                             
       if(!source)
         return false;
       source += mc->offset;
+
 
       void* result = malloc(mc->count * mc->stride);
       if(!result)
@@ -552,22 +678,26 @@ bool Scene::loadCompressedViewsGLTF(ProcessingInfo&                             
       {
         case cgltf_meshopt_compression_mode_attributes:
           warn = meshopt_decodeVertexVersion(source, mc->size) != 0;
+
           rc   = meshopt_decodeVertexBuffer(result, mc->count, mc->stride, source, mc->size);
           break;
 
         case cgltf_meshopt_compression_mode_triangles:
           warn = meshopt_decodeIndexVersion(source, mc->size) != 1;
+
           rc   = meshopt_decodeIndexBuffer(result, mc->count, mc->stride, source, mc->size);
           break;
 
         case cgltf_meshopt_compression_mode_indices:
           warn = meshopt_decodeIndexVersion(source, mc->size) != 1;
+
           rc   = meshopt_decodeIndexSequence(result, mc->count, mc->stride, source, mc->size);
           break;
       }
 
       if(rc != 0)
       {
+
         free(result);
         return false;
       }
@@ -583,14 +713,17 @@ bool Scene::loadCompressedViewsGLTF(ProcessingInfo&                             
       switch(mc->filter)
       {
         case cgltf_meshopt_compression_filter_octahedral:
+
           meshopt_decodeFilterOct(result, mc->count, mc->stride);
           break;
 
         case cgltf_meshopt_compression_filter_quaternion:
+
           meshopt_decodeFilterQuat(result, mc->count, mc->stride);
           break;
 
         case cgltf_meshopt_compression_filter_exponential:
+
           meshopt_decodeFilterExp(result, mc->count, mc->stride);
           break;
 
@@ -612,12 +745,17 @@ void Scene::unloadCompressedViewsGLTF(ProcessingInfo&                           
   {
     size_t bufferViewIndex = bufferView - gltf->buffer_views;
 
+
+    // 函数：lock。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+    // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+    // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
     SpinLock lock((std::atomic_uint32_t&)processingInfo.bufferViewLocks[bufferViewIndex]);
 
     uint32_t users = processingInfo.bufferViewUsers[bufferViewIndex]--;
 
     if(users == 0)
     {
+
       free(bufferView->data);
     }
   }
@@ -641,12 +779,15 @@ inline void readAttributesGLTF(const cgltf_accessor* accessor,
 
       if(doQuantize && dropBits)
       {
+
         tmp = quantizeFloat(tmp, dropBits);
       }
 
       if(doBBox)
       {
+
         *bboxMin = glm::min(*bboxMin, tmp);
+
         *bboxMax = glm::max(*bboxMax, tmp);
       }
 
@@ -662,12 +803,15 @@ inline void readAttributesGLTF(const cgltf_accessor* accessor,
 
       if(doQuantize && dropBits)
       {
+
         tmp = quantizeFloat(tmp, dropBits);
       }
 
       if(doBBox)
       {
+
         *bboxMin = glm::min(*bboxMin, tmp);
+
         *bboxMax = glm::max(*bboxMax, tmp);
       }
 
@@ -676,15 +820,21 @@ inline void readAttributesGLTF(const cgltf_accessor* accessor,
   }
 }
 
+
+// 函数：Scene::loadGeometryGLTF。从文件、缓存、GPU 缓冲或共享布局中读取数据并转换为本模块格式。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
 void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIndex, size_t meshIndex, const struct cgltf_data* gltf)
 {
-  // when resuming a partial processing, early out if it was already processed
-  // second entry is dataSize
+
+
   if(m_processingOnlyPartialFile && m_processingOnlyGeometryOffsets[geometryIndex * 2 + 1])
   {
+
     uint32_t percentage = processingInfo.logCompletedGeometry();
     if(m_loaderConfig.progressPct)
     {
+
       m_loaderConfig.progressPct->store(percentage);
     }
 
@@ -697,7 +847,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
   GeometryStorage&  geometry = m_geometryStorages[geometryIndex];
   geometry.bbox              = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
-  // count triangle and vertices pass
+
   uint32_t triangleCount = 0;
   uint32_t verticesCount = 0;
   for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
@@ -709,7 +859,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
       continue;
     }
 
-    // If the mesh has no attributes, there's nothing we can do
+
     if(gltfPrim->attributes_count == 0)
     {
       continue;
@@ -721,6 +871,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
       const cgltf_accessor*  accessor   = gltfAttrib.data;
 
       if(accessor->buffer_view->has_meshopt_compression)
+
         compressedViews.insert(accessor->buffer_view);
 
       if(strcmp(gltfAttrib.name, "POSITION") == 0)
@@ -750,23 +901,24 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
     }
 
     if(gltfPrim->indices->buffer_view->has_meshopt_compression)
+
       compressedViews.insert(gltfPrim->indices->buffer_view);
 
     triangleCount += (uint32_t)gltfPrim->indices->count / 3;
   }
 
 
-  // use memset 0 to avoid issues with padding within struct
   memset(&geometry.lodInfo, 0, sizeof(geometry.lodInfo));
   geometry.lodInfo.inputTriangleCount = triangleCount;
   geometry.lodInfo.inputVertexCount   = verticesCount;
 
-  // test if this mesh exists in the cache
+
   bool isCached = checkCache(geometry.lodInfo, geometryIndex);
 
-  // invalid cache
+
   if(m_cacheFileView.isValid() && !isCached)
   {
+
     LOGW("geometry mismatches scene cache file\n");
     return;
   }
@@ -781,7 +933,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
       geometry.attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT;
     }
 
-    // disable TEX_1 if no TEX_0
+
     if(!(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
     {
       geometry.attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1;
@@ -792,10 +944,10 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
                              + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0 ? 2 : 0)
                              + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1 ? 2 : 0);
     uint32_t attributeStart = 0;
+
     uint32_t attributeEnd   = uint32_t(attributeStride);
 
-    // all attributes with simplification weights must come first due to how
-    // meshoptimizer works
+
     if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL))
     {
       if(m_config.simplifyNormalWeight > 0)
@@ -852,24 +1004,29 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
       }
     }
 
+
     assert(attributeStart == attributeEnd);
 
     geometry.attributesWithWeights = attributeStart;
+
     geometry.vertexPositions.resize(verticesCount);
+
     geometry.vertexAttributes.resize(verticesCount * attributeStride, 0);
+
     geometry.triangles.resize(triangleCount);
 
-    // decompress views
+
     if(!compressedViews.empty())
     {
       if(!loadCompressedViewsGLTF(processingInfo, compressedViews, gltf))
       {
+
         LOGW("Error decompressing GLTF\n");
         return;
       }
     }
 
-    // fill pass
+
     uint32_t offsetVertices  = 0;
     uint32_t offsetTriangles = 0;
 
@@ -882,7 +1039,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
         continue;
       }
 
-      // If the mesh has no attributes, there's nothing we can do
+
       if(gltfPrim->attributes_count == 0)
       {
         continue;
@@ -942,7 +1099,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
         }
       }
 
-      // indices
+
       {
         const cgltf_accessor* accessor = gltfPrim->indices;
 
@@ -969,17 +1126,21 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
     }
   }
 
+
   processGeometry(processingInfo, geometryIndex, isCached);
 
   if(!compressedViews.empty())
   {
+
     unloadCompressedViewsGLTF(processingInfo, compressedViews, gltf);
   }
+
 
   uint32_t percentage = processingInfo.logCompletedGeometry(triangleCount);
   if(m_loaderConfig.progressPct)
   {
+
     m_loaderConfig.progressPct->store(percentage);
   }
 }
-}  // namespace lodclusters
+}

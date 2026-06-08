@@ -1,21 +1,33 @@
+//==============================================================================
+// 文件：src/app/lodclusters_scene.cpp
+// 模块定位：场景加载、缓存管理、RenderScene 驻留模式选择和相机初始化实现。
+// 数据流：输入是 glTF/cfg 路径、SceneConfig 和 StreamingConfig；输出是 Scene、RenderScene、场景网格、相机和缓存文件。
+// 方法说明：该层把离线几何处理和在线渲染驻留解耦：Scene 表示 CPU 侧语义数据，RenderScene 表示 GPU 可访问布局。
+// 正确性约束：异步加载期间不得释放正在使用的 Scene；preload 失败时必须可回退到 流式加载；相机裁剪面要覆盖 grid 后的整体包围盒。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include <thread>
 #include <volk.h>
 #include <nvutils/file_operations.hpp>
 #include <nvgui/camera.hpp>
 #include "lodclusters.hpp"
 
+
+// 命名空间说明：限制符号可见范围，并表明这些类型和函数属于同一功能域。
+// 该边界有助于区分应用层、渲染层、场景层和算法层的职责。
 namespace lodclusters {
 
-// Scene loading and render-scene residency.
 
-// 初始化场景
-// 加载指定路径的场景文件，支持.gltf、.glb和.cfg格式
-// 参数: filePath - 场景文件路径
-//       cacheSuffix - 缓存文件后缀
-//       configChange - 是否仅更改配置而不重新加载场景
+// 函数：LodClusters::initScene。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange)
 {
+
   deinitScene();
+
 
   std::string fileName = nvutils::utf8FromPath(filePath);
 
@@ -32,21 +44,27 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
       if(scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, cacheSuffix, configChange) != Scene::SCENE_RESULT_SUCCESS)
       {
         scene = nullptr;
+
         LOGW("Loading scene failed\n");
       }
       else
       {
+
         m_scene               = std::move(scene);
         m_sceneFilePath       = filePath;
+
         m_tweak.clusterConfig = findSceneClusterConfig(m_scene->m_config);
+
         m_scene->updateSceneGrid(m_sceneGridConfig);
         m_sceneGridConfigLast = m_sceneGridConfig;
+
         updatedSceneGrid();
         m_renderSceneCanPreload = ScenePreloaded::canPreload(m_resources.getDeviceLocalHeapSize(), m_scene.get());
 
         if(!configChange)
         {
           m_sceneConfig = m_scene->m_config;
+
           postInitNewScene();
           m_tweakLast       = m_tweak;
           m_sceneConfigLast = m_sceneConfig;
@@ -54,6 +72,7 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
         }
       }
       m_sceneLoading = false;
+
     }).detach();
 
     return;
@@ -62,72 +81,95 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
   return;
 }
 
-// 初始化渲染场景
-// 创建并初始化RenderScene对象，处理场景的渲染相关设置
-// 如果预加载失败，会自动尝试使用流式加载
+
+// 函数：LodClusters::initRenderScene。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void LodClusters::initRenderScene()
 {
+
   assert(m_scene);
 
   m_renderScene = std::make_unique<RenderScene>();
 
   bool success = m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, m_tweak.useStreaming);
 
-  // if preload fails, try streaming
+
   if(!m_tweak.useStreaming && !success)
   {
-    // override to use streaming
+
     m_tweak.useStreaming     = true;
     m_tweakLast.useStreaming = true;
 
     if(!m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, true))
     {
+
       LOGW("Init renderscene failed\n");
+
       deinitRenderScene();
     }
   }
   else if(!success && m_tweak.useStreaming)
   {
+
     LOGW("Init renderscene failed\n");
+
     deinitRenderScene();
   }
 
   m_streamingConfigLast = m_streamingConfig;
 }
 
+
+// 函数：LodClusters::deinitRenderScene。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void LodClusters::deinitRenderScene()
 {
   NVVK_CHECK(vkDeviceWaitIdle(m_app->getDevice()));
   if(m_renderScene)
   {
+
     m_renderScene->deinit();
     m_renderScene = nullptr;
   }
 }
 
+
+// 函数：LodClusters::deinitScene。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void LodClusters::deinitScene()
 {
+
   deinitRenderScene();
 
   if(m_scene)
   {
+
     m_scene->deinit();
     m_scene = nullptr;
   }
 }
 
-// New-scene camera and scene-dependent defaults.
 
+// 函数：LodClusters::postInitNewScene。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void LodClusters::postInitNewScene()
 {
+
   assert(m_scene);
 
   glm::vec3 extent         = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
   glm::vec3 center         = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
+
   float     sceneDimension = glm::length(extent);
 
   m_frameConfig.frameConstants.wLightPos = center + sceneDimension;
+
   m_frameConfig.frameConstants.sceneSize = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
+
   setSceneCamera(m_sceneFilePath);
   m_frames                    = 0;
   m_streamingConfig.maxGroups = std::max(m_streamingConfig.maxGroups, uint32_t(m_scene->getActiveGeometryCount()));
@@ -135,19 +177,27 @@ void LodClusters::postInitNewScene()
   if(!m_scene->m_hasVertexNormals)
     m_tweak.facetShading = true;
 
+
   m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
 }
 
-// Cache, file-drop, and offline processing entry points.
 
+// 函数：LodClusters::saveCacheFile。把当前状态写入缓存、缓冲、文件或着色器可消费的数据布局。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：写入路径应明确字节对齐、所有权和可见性，避免后续读取端解释错误。
 void LodClusters::saveCacheFile()
 {
   if(m_scene)
   {
+
     m_scene->saveCache();
   }
 }
 
+
+// 函数：LodClusters::onFileDrop。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 {
   if(filePath.empty())
@@ -155,10 +205,10 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 
   if(!m_sceneLoadFromConfig)
   {
-    // avoid certain state to affect the new scene
+
     if(!m_sceneFilePathDropLast.empty() && filePath != m_sceneFilePathDropLast)
     {
-      // reset grid parameter (in case scene is too large to be replicated)
+
       m_sceneGridConfig.numCopies                 = 1;
       m_sceneGridConfig.uniqueGeometriesForCopies = false;
 
@@ -173,23 +223,24 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 
   if(filePath.extension() == ".cfg")
   {
+
     std::string filePathString = nvutils::utf8FromPath(filePath);
 
     LOGI("Loading config: %s\n", filePathString.c_str());
 
     std::vector<const char*> args;
+
     args.push_back("--configfile");
     args.push_back(filePathString.c_str());
 
     std::filesystem::path oldFilePath = m_sceneFilePathDropNew;
 
-    // config parsing might change m_sceneFilePathDropNew
-    // and m_cameraString
+
     m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
 
     if(!m_cameraStringCommandLine.empty())
     {
-      // override from command-line
+
       m_cameraString = m_cameraStringCommandLine;
     }
 
@@ -199,6 +250,7 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 
       m_sceneLoadFromConfig             = true;
       std::filesystem::path cfgFilePath = m_sceneFilePathDropNew;
+
       onFileDrop(cfgFilePath);
 
       m_sceneLoadFromConfig  = oldState;
@@ -208,20 +260,28 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
   }
 
   LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());
+
   deinitRenderer();
+
 
   initScene(filePath, m_sceneCacheSuffix, false);
 }
 
+
+// 函数：LodClusters::doProcessingOnly。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void LodClusters::doProcessingOnly()
 {
+
   setFromClusterConfig(m_sceneConfig, m_tweak.clusterConfig);
+
   assert(m_app == nullptr);
   m_scene = std::make_unique<Scene>();
+
   m_scene->init(m_sceneFilePathDropNew, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, false);
 }
 
-// Cluster-size preset mapping used by UI and command-line parameters.
 
 const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] = {
     {32, 32, CLUSTER_32T_32V}, {32, 64, CLUSTER_32T_64V}, {32, 96, CLUSTER_32T_96V}, {32, 128, CLUSTER_32T_128V}, {32, 160, CLUSTER_32T_160V}, {32, 192, CLUSTER_32T_192V}, {32, 224, CLUSTER_32T_224V}, {32, 256, CLUSTER_32T_256V},
@@ -234,6 +294,10 @@ const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] 
     {256, 32, CLUSTER_256T_32V}, {256, 64, CLUSTER_256T_64V}, {256, 96, CLUSTER_256T_96V}, {256, 128, CLUSTER_256T_128V}, {256, 160, CLUSTER_256T_160V}, {256, 192, CLUSTER_256T_192V}, {256, 224, CLUSTER_256T_224V}, {256, 256, CLUSTER_256T_256V},
 };
 
+
+// 函数：LodClusters::findSceneClusterConfig。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 LodClusters::ClusterConfig LodClusters::findSceneClusterConfig(const SceneConfig& sceneConfig)
 {
   for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
@@ -248,6 +312,10 @@ LodClusters::ClusterConfig LodClusters::findSceneClusterConfig(const SceneConfig
   return CLUSTER_256T_256V;
 }
 
+
+// 函数：LodClusters::setFromClusterConfig。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void LodClusters::setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig clusterConfig)
 {
   for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
@@ -261,6 +329,10 @@ void LodClusters::setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig c
   }
 }
 
+
+// 函数：LodClusters::updatedSceneGrid。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 void LodClusters::updatedSceneGrid()
 {
   {
@@ -279,15 +351,18 @@ void LodClusters::updatedSceneGrid()
       m_info.cameraManipulator->setClipPlanes(
           glm::vec2((bigScene ? 0.0001f : 0.01F) * modelRadius,
                     bigScene ? gridRadius * 1.2f : std::max(50.0f * modelRadius, gridRadius * 1.2f)));
-        //m_info.cameraManipulator->setClipPlanes(glm::vec2(0.0001f, 10000.0f));
+
   }
 
 }
 
-// Scene camera placement and picking helpers.
 
+// 函数：LodClusters::setSceneCamera。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
 {
+
   nvgui::SetCameraJsonFile(filePath);
 
   glm::vec3 modelExtent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
@@ -299,11 +374,14 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
   if(!m_scene->m_cameras.empty())
   {
     auto& c = m_scene->m_cameras[0];
+
     m_info.cameraManipulator->setFov(c.fovy);
 
 
     c.eye              = glm::vec3(c.worldMatrix[3]);
+
     float     distance = glm::length(modelCenter - c.eye);
+
     glm::mat3 rotMat   = glm::mat3(c.worldMatrix);
     c.center           = {0, 0, -distance};
     c.center           = c.eye + (rotMat * c.center);
@@ -314,8 +392,11 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
     nvgui::SetHomeCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
     for(auto& cam : m_scene->m_cameras)
     {
+
       cam.eye            = glm::vec3(cam.worldMatrix[3]);
+
       float     distance = glm::length(modelCenter - cam.eye);
+
       glm::mat3 rotMat   = glm::mat3(cam.worldMatrix);
       cam.center         = {0, 0, -distance};
       cam.center         = cam.eye + (rotMat * cam.center);
@@ -336,15 +417,21 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
 
   if(m_cameraSpeed)
   {
+
     m_info.cameraManipulator->setSpeed(m_cameraSpeed);
   }
 
   if(!m_cameraString.empty())
   {
+
     applyCameraString();
   }
 }
 
+
+// 函数：LodClusters::decodePickingDepth。在紧凑编码和逻辑结构之间转换，减少带宽或便于着色器访问。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：编码位宽、符号位和特殊值必须与写入端/读取端完全一致，否则会产生难以定位的跨阶段错误。
 float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
 {
   if(!isPickingValid(readback))
@@ -357,9 +444,13 @@ float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
   return 1.f - res;
 }
 
+
+// 函数：LodClusters::isPickingValid。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool LodClusters::isPickingValid(const shaderio::Readback& readback)
 {
   return readback._packedDepth0 != 0u;
 }
 
-}  // namespace lodclusters
+}

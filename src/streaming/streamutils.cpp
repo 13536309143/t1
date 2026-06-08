@@ -1,42 +1,61 @@
-//流式传输相关的底层工具辅助函数
+//==============================================================================
+// 文件：src/streaming/streamutils.cpp
+// 模块定位：流式加载基础结构实现，管理 GPU 缓冲、驻留 组、几何存储分配、暂存上传和统计汇总。
+// 数据流：输入是 SceneStreaming 的任务和配置；输出是可提交的上传命令、地址修补任务和统计信息。
+// 方法说明：实现层把 流式加载 的离散事件规约为一组固定 缓冲 中的批处理任务，使 GPU 和 CPU 可以通过有限同步点协作。
+// 正确性约束：每次 load/unload 都必须同步更新 resident、storage 和 着色器 数据；上传范围不能超过 transfer budget。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include <volk.h>
 #include "streamutils.hpp"
+
+
+// 命名空间说明：限制符号可见范围，并表明这些类型和函数属于同一功能域。
+// 该边界有助于区分应用层、渲染层、场景层和算法层的职责。
 namespace lodclusters {
 
-// StreamingRequests
 
+// 函数：StreamingRequests::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint32_t groupCountAlignment, uint32_t clusterCountAlignment)
 {
   m_shaderData            = {};
   m_shaderData.maxLoads   = config.maxPerFrameLoadRequests;
   m_shaderData.maxUnloads = config.maxPerFrameUnloadRequests;
 
-  // some values are aligned up for easier gpu kernel access
 
   BufferRanges ranges = {};
   m_shaderData.loadGeometryGroups =
       ranges.append(sizeof(GeometryGroup) * nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment), 8);
   m_shaderData.unloadGeometryGroups =
       ranges.append(sizeof(GeometryGroup) * nvutils::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment), 8);
+
   m_requestSize = ranges.getSize();
 
-  // must come after the others
+
   m_shaderDataOffset = m_requestSize * STREAMING_MAX_ACTIVE_TASKS;
 
   std::vector<uint32_t> sharingQueueFamilies;
   if(config.useAsyncTransfer)
   {
+
     sharingQueueFamilies.push_back(res.m_queueStates.primary.m_familyIndex);
+
     sharingQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
   }
 
   res.createBuffer(m_requestBuffer, (m_requestSize + sizeof(shaderio::StreamingRequest)) * STREAMING_MAX_ACTIVE_TASKS,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                    VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
+
   NVVK_DBG_NAME(m_requestBuffer.buffer);
 
   res.createBuffer(m_requestHostBuffer, m_requestBuffer.bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                    VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+
   NVVK_DBG_NAME(m_requestHostBuffer.buffer);
 
   for(uint32_t c = 0; c < STREAMING_MAX_ACTIVE_TASKS; c++)
@@ -53,59 +72,80 @@ void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint
   }
 }
 
+
+// 函数：StreamingRequests::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingRequests::deinit(Resources& res)
 {
+
   res.m_allocator.destroyBuffer(m_requestBuffer);
+
   res.m_allocator.destroyBuffer(m_requestHostBuffer);
 }
 
+
+// 函数：StreamingRequests::getOperationsSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 size_t StreamingRequests::getOperationsSize() const
 {
   return m_requestBuffer.bufferSize;
 }
 
+
+// 函数：StreamingRequests::applyTask。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void StreamingRequests::applyTask(shaderio::StreamingRequest& shaderData, uint32_t taskIndex, uint32_t frameIndex)
 {
   shaderData = m_shaderData;
   shaderData.loadGeometryGroups += m_requestBuffer.address + m_requestSize * taskIndex;
   shaderData.unloadGeometryGroups += m_requestBuffer.address + m_requestSize * taskIndex;
   shaderData.taskIndex = taskIndex;
-  // special address value that allows us to ensure that a non-resident geometry group
-  // isn't requested multiple times in the same frame.
+
+
   shaderData.frameIndex = STREAMING_INVALID_ADDRESS_START + frameIndex;
 }
 
+
+// 函数：StreamingRequests::cmdRunTask。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 void StreamingRequests::cmdRunTask(VkCommandBuffer cmd, const shaderio::StreamingRequest& shaderData, VkBuffer buffer, size_t bufferOffset)
 {
   uint32_t taskIndex = shaderData.taskIndex;
 
-  // copy the newly requested indices to host
+
   VkBufferCopy region;
   region.dstOffset = m_requestSize * taskIndex;
   region.srcOffset = m_requestSize * taskIndex;
   region.size      = m_requestSize;
+
   vkCmdCopyBuffer(cmd, m_requestBuffer.buffer, m_requestHostBuffer.buffer, 1, &region);
 
-  // copy the shaderio, actually we only care for the counters of the request
-  // but grabbing everything is useful for pointer comparisons
+
   region.dstOffset = m_shaderDataOffset + (sizeof(shaderio::StreamingRequest) * taskIndex);
   region.srcOffset = bufferOffset;
   region.size      = sizeof(shaderio::StreamingRequest);
+
   vkCmdCopyBuffer(cmd, buffer, m_requestHostBuffer.buffer, 1, &region);
 }
 
-//////////////////////////////////////////////////////////////////////////
-//
-// StreamingResident
 
+// 函数：StreamingResident::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void StreamingResident::init(Resources& res, const StreamingConfig& config, uint32_t groupCountAlignment, uint32_t clusterCountAlignment)
 {
+
   m_groupAllocator.init(config.maxGroups);
+
   m_clusterAllocator.init(config.maxClusters);
 
-  // some values are aligned up for easier gpu kernel access
 
   m_maxClusters  = nvutils::align_up(config.maxClusters, clusterCountAlignment);
+
   m_maxGroups    = nvutils::align_up(config.maxGroups, groupCountAlignment);
   m_maxClasBytes = 0;
 
@@ -120,8 +160,11 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
   m_activeGroupIndices         = {};
   m_mapGeometryGroup2Residency = {};
 
+
   m_mapGeometryGroup2Residency.reserve(m_maxGroups);
+
   m_groups.resize(m_maxGroups);
+
   m_activeGroupIndices.resize(m_maxGroups);
 
   BufferRanges ranges      = {};
@@ -134,17 +177,21 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
   std::vector<uint32_t> sharingQueueFamilies;
   if(config.useAsyncTransfer)
   {
+
     sharingQueueFamilies.push_back(res.m_queueStates.primary.m_familyIndex);
+
     sharingQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
   }
 
   res.createBuffer(m_residentBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                    VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
+
   NVVK_DBG_NAME(m_residentBuffer.buffer);
 
   res.createBufferTyped(m_residentActiveHostBuffer, (m_maxGroups)*STREAMING_MAX_ACTIVE_TASKS,
                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+
   NVVK_DBG_NAME(m_residentActiveHostBuffer.buffer);
 
   m_shaderData              = {};
@@ -154,18 +201,31 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
   m_shaderData.activeGroups = m_residentBuffer.address + m_residentActiveOffset;
 }
 
+
+// 函数：StreamingResident::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingResident::deinit(Resources& res)
 {
+
   m_groupAllocator.destroyAll();
+
   m_clusterAllocator.destroyAll();
 
+
   res.m_allocator.destroyBuffer(m_residentBuffer);
+
   res.m_allocator.destroyBuffer(m_residentActiveHostBuffer);
+
   deinitClas(res);
 
   *this = {};
 }
 
+
+// 函数：StreamingResident::getOperationsSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 size_t StreamingResident::getOperationsSize() const
 {
   return m_residentBuffer.bufferSize;
@@ -190,8 +250,9 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
     m_shaderData.groupClasSizes = ranges.append(sizeof(glm::uvec2) * m_maxGroups, 8);
   }
 
-  // one buffer for organization
+
   res.createBuffer(m_clasManageBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
   NVVK_DBG_NAME(m_clasManageBuffer.buffer);
 
   m_shaderData.clasAddresses += m_clasManageBuffer.address;
@@ -203,9 +264,10 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
     m_shaderData.groupClasSizes += m_clasManageBuffer.address;
   }
 
-  // one buffer for actual storage, allow > 4 GB
+
   res.createLargeBuffer(m_clasDataBuffer, m_maxClasBytes,
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+
   NVVK_DBG_NAME(m_clasDataBuffer.buffer);
 
   m_shaderData.clasBaseAddress = m_clasDataBuffer.address;
@@ -220,11 +282,19 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
   return m_groups.data();
 }
 
+
+// 函数：StreamingResident::getClasOperationsSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 size_t StreamingResident::getClasOperationsSize() const
 {
   return m_clasManageBuffer.bufferSize;
 }
 
+
+// 函数：StreamingResident::getStats。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void StreamingResident::getStats(StreamingStats& stats) const
 {
   stats.residentGroups     = m_activeGroupsCount;
@@ -233,9 +303,15 @@ void StreamingResident::getStats(StreamingStats& stats) const
   stats.persistentClusters = m_lowDetailClustersCount;
 }
 
+
+// 函数：StreamingResident::deinitClas。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingResident::deinitClas(Resources& res)
 {
+
   res.m_allocator.destroyBuffer(m_clasManageBuffer);
+
   res.m_allocator.destroyLargeBuffer(m_clasDataBuffer);
 
   m_shaderData.clasBaseAddress           = 0;
@@ -247,14 +323,21 @@ void StreamingResident::deinitClas(Resources& res)
   m_shaderData.clasMaxSize               = 0;
 }
 
+
+// 函数：StreamingResident::reset。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void StreamingResident::reset(shaderio::StreamingResident& shaderData)
 {
   for(uint32_t activeGroup = m_lowDetailGroupsCount; activeGroup < m_activeGroupsCount; activeGroup++)
   {
     Group& group = m_groups[m_activeGroupIndices[activeGroup]];
 
+
     m_mapGeometryGroup2Residency.erase(group.geometryGroup.key);
+
     m_groupAllocator.destroyID(group.groupResidentID);
+
     m_clusterAllocator.destroyRangeID(group.clusterResidentID, group.clusterCount);
   }
 
@@ -263,7 +346,7 @@ void StreamingResident::reset(shaderio::StreamingResident& shaderData)
 
   m_groupIndicesUpdateRange = {};
 
-  // adjust active list in shaders to skip persistent
+
   m_shaderData.activeGroupsCount   = m_activeGroupsCount - m_lowDetailGroupsCount;
   m_shaderData.activeClustersCount = m_activeClustersCount - m_lowDetailClustersCount;
   m_shaderData.activeGroups = m_residentBuffer.address + m_residentActiveOffset + sizeof(uint32_t) * m_lowDetailGroupsCount;
@@ -272,15 +355,18 @@ void StreamingResident::reset(shaderio::StreamingResident& shaderData)
 }
 
 
+// 函数：StreamingResident::uploadInitialState。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader, shaderio::StreamingResident& shaderData)
 {
-  // all groups and clusters added so far are part of the persistent low detail state
+
 
   m_lowDetailGroupsCount      = m_activeGroupsCount;
   m_lowDetailClustersCount    = m_activeClustersCount;
   m_lowDetailMaxGroupClusters = 0;
 
-  // for debugging (see STREAMING_DEBUG_ADDRESSES) set this to m_maxGroups, otherwise m_loGroupsCount
+
   uint32_t updatedActiveGroups = m_lowDetailGroupsCount;
 #if STREAMING_DEBUG_ADDRESSES
   updatedActiveGroups = m_maxGroups;
@@ -297,6 +383,7 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
   for(uint32_t g = 0; g < m_lowDetailGroupsCount; g++)
   {
     const Group& group = m_groups[g];
+
     assert(group.groupResidentID == g);
 
     shaderio::StreamingGroup& shaderGroup = shaderGroups[g];
@@ -310,14 +397,14 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
     m_lowDetailMaxGroupClusters = std::max(m_lowDetailMaxGroupClusters, uint32_t(group.clusterCount));
   }
 #if STREAMING_DEBUG_ADDRESSES
-  // for debugging purposes pre-fill with invalid
+
   for(uint32_t g = m_lowDetailGroupsCount; g < updatedActiveGroups; g++)
   {
     shaderGroups[g].group = STREAMING_INVALID_ADDRESS_START;
   }
 #endif
 
-  // adjust active list in shaders to skip persistent
+
   m_shaderData.activeGroupsCount   = m_activeGroupsCount - m_lowDetailGroupsCount;
   m_shaderData.activeClustersCount = m_activeClustersCount - m_lowDetailClustersCount;
   m_shaderData.activeGroups = m_residentBuffer.address + m_residentActiveOffset + sizeof(uint32_t) * m_lowDetailGroupsCount;
@@ -325,6 +412,10 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
   shaderData = m_shaderData;
 }
 
+
+// 函数：StreamingResident::cmdUploadTask。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 size_t StreamingResident::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 {
   TaskInfo& task = m_taskInfos[taskIndex];
@@ -333,9 +424,10 @@ size_t StreamingResident::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 
   task.region     = {};
   task.shaderData = m_shaderData;
-  // we adjust the shaderio so that we skip the list of persistent data
+
   task.shaderData.activeGroupsCount   = m_activeGroupsCount - m_lowDetailGroupsCount;
   task.shaderData.activeClustersCount = m_activeClustersCount - m_lowDetailClustersCount;
+
 
   uint32_t deltaCount = m_groupIndicesUpdateRange.count();
   if(!deltaCount)
@@ -343,31 +435,34 @@ size_t StreamingResident::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
     return 0;
   }
 
-  // upload range of indices that was modified since last update
-  // tightly packed in host
 
   memcpy(m_residentActiveHostBuffer.data() + taskOffset, m_activeGroupIndices.data() + m_groupIndicesUpdateRange.lo,
          sizeof(uint32_t) * deltaCount);
 
-  // first copy from host to device update space now
+
   VkBufferCopy region;
   region.size      = sizeof(uint32_t) * deltaCount;
   region.srcOffset = sizeof(uint32_t) * taskOffset;
   region.dstOffset = m_residentActiveUpdateOffset + sizeof(uint32_t) * (taskOffset);
+
   vkCmdCopyBuffer(cmd, m_residentActiveHostBuffer.buffer, m_residentBuffer.buffer, 1, &region);
 
-  // later we copy from update region to final persistent region
+
   task.region.size      = region.size;
   task.region.srcOffset = region.dstOffset;
-  // though we apply the range offset for final region
+
   task.region.dstOffset = m_residentActiveOffset + sizeof(uint32_t) * m_groupIndicesUpdateRange.lo;
 
-  // reset for next update
+
   m_groupIndicesUpdateRange = {};
 
   return region.size;
 }
 
+
+// 函数：StreamingResident::applyTask。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void StreamingResident::applyTask(shaderio::StreamingResident& shaderData, uint32_t taskIndex, uint32_t frameIndex)
 {
   shaderData            = m_taskInfos[taskIndex].shaderData;
@@ -375,31 +470,54 @@ void StreamingResident::applyTask(shaderio::StreamingResident& shaderData, uint3
   shaderData.frameIndex = frameIndex;
 }
 
+
+// 函数：StreamingResident::cmdRunTask。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 void StreamingResident::cmdRunTask(VkCommandBuffer cmd, uint32_t taskIndex)
 {
   TaskInfo& task = m_taskInfos[taskIndex];
   if(task.region.size)
   {
+
     vkCmdCopyBuffer(cmd, m_residentBuffer.buffer, m_residentBuffer.buffer, 1, &task.region);
   }
 }
 
+
+// 函数：StreamingResident::getLoadActiveGroupsOffset。从文件、缓存、GPU 缓冲或共享布局中读取数据并转换为本模块格式。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
 uint32_t StreamingResident::getLoadActiveGroupsOffset() const
 {
   return m_activeGroupsCount - m_lowDetailGroupsCount;
 }
+
+
+// 函数：StreamingResident::getLoadActiveClustersOffset。从文件、缓存、GPU 缓冲或共享布局中读取数据并转换为本模块格式。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
 uint32_t StreamingResident::getLoadActiveClustersOffset() const
 {
   return m_activeClustersCount - m_lowDetailClustersCount;
 }
 
+
+// 函数：StreamingResident::canAllocateGroup。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool StreamingResident::canAllocateGroup(uint32_t numClusters) const
 {
   return m_groupAllocator.isRangeAvailable(1) && m_clusterAllocator.isRangeAvailable(numClusters);
 }
 
+
+// 函数：StreamingResident::findGroup。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 const StreamingResident::Group* StreamingResident::findGroup(GeometryGroup geometryGroup) const
 {
+
   auto it = m_mapGeometryGroup2Residency.find(geometryGroup.key);
   if(it == m_mapGeometryGroup2Residency.end())
   {
@@ -411,14 +529,22 @@ const StreamingResident::Group* StreamingResident::findGroup(GeometryGroup geome
   }
 }
 
+
+// 函数：StreamingResident::addGroup。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 StreamingResident::Group* StreamingResident::addGroup(GeometryGroup geometryGroup, uint32_t clusterCount)
 {
   bool     valid = false;
   uint32_t groupResidentID;
   uint32_t clusterResidentID;
+
   valid = m_groupAllocator.createID(groupResidentID);
+
   assert(valid);
+
   valid = m_clusterAllocator.createRangeID(clusterResidentID, clusterCount);
+
   assert(valid);
 
   StreamingResident::Group& group = m_groups[groupResidentID];
@@ -435,34 +561,35 @@ StreamingResident::Group* StreamingResident::addGroup(GeometryGroup geometryGrou
 
   m_activeGroupIndices[group.activeIndex] = groupResidentID;
 
-  // we don't need to do this, as Update task wile take care of modifying
-  // the active groups buffer for all newly added
-  // m_groupIndicesUpdateRange.update(group.activeIndex);
 
   m_activeClustersCount += clusterCount;
 
   return &m_groups[groupResidentID];
 }
 
+
+// 函数：StreamingResident::removeGroup。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void StreamingResident::removeGroup(uint32_t groupResidentID)
 {
   StreamingResident::Group& group = m_groups[groupResidentID];
   assert(m_mapGeometryGroup2Residency.find(group.geometryGroup.key) != m_mapGeometryGroup2Residency.end());
+
   m_mapGeometryGroup2Residency.erase(group.geometryGroup.key);
 
   {
-    // remove group from compact indices list
+
     uint32_t activeIndex = group.activeIndex;
 
-    // classic swapping our position in the active list with last element
+
     if(activeIndex + 1 != m_activeGroupsCount)
     {
       uint32_t lastResidentID              = m_activeGroupIndices[m_activeGroupsCount - 1];
       m_groups[lastResidentID].activeIndex = activeIndex;
       m_activeGroupIndices[activeIndex]    = lastResidentID;
 
-      // we track those changes so that we later minimize the upload of
-      // changed indices
+
       m_groupIndicesUpdateRange.update(activeIndex);
     }
     m_activeGroupsCount--;
@@ -470,15 +597,14 @@ void StreamingResident::removeGroup(uint32_t groupResidentID)
 
   m_activeClustersCount -= group.clusterCount;
 
+
   m_groupAllocator.destroyID(groupResidentID);
+
   m_clusterAllocator.destroyRangeID(group.clusterResidentID, group.clusterCount);
 
   group = {};
 }
 
-//////////////////////////////////////////////////////////////////////////
-//
-// StreamingAllocator
 
 void StreamingAllocator::init(Resources&                    res,
                               size_t                        totalMegaBytes,
@@ -487,9 +613,10 @@ void StreamingAllocator::init(Resources&                    res,
                               uint32_t                      sectorSizeShift,
                               shaderio::StreamingAllocator& shaderData)
 {
+
   granularityByteSize = std::max(1u, granularityByteSize);
 
-  // at least 2 warps
+
   assert(sectorSizeShift > 5 && granularityByteSize <= 0xFFFF);
 
   uint32_t granularityByteShift = 0;
@@ -497,7 +624,7 @@ void StreamingAllocator::init(Resources&                    res,
   {
     granularityByteShift++;
   }
-  // want power of two
+
   assert(granularityByteShift <= 16 && granularityByteSize == (1u << granularityByteShift));
 
   size_t sectorSize32s = size_t(1) << sectorSizeShift;
@@ -508,17 +635,18 @@ void StreamingAllocator::init(Resources&                    res,
   m_shaderData                      = {};
   m_shaderData.freeGapsCounter      = 0;
   m_shaderData.granularityByteShift = granularityByteShift;
-  // align up to be multiple of 32
+
   m_shaderData.maxAllocationSize = (((maxAllocationByteSize + granularityByteSize - 1) / granularityByteSize) + 31) & (~31);
   m_shaderData.sectorSizeShift          = sectorSizeShift;
+
   m_shaderData.sectorMaxAllocationSized = uint32_t(sectorSize32s * 32 / m_shaderData.maxAllocationSize);
+
   m_shaderData.sectorCount              = uint32_t(sectorCount);
 
-  // can only manage memory in multiple of sectorSize
-  // so there might be some initial waste
+
   m_shaderData.baseWastedSize = uint32_t(memory32s - (sectorCount * sectorSize32s));
 
-  // reset to multiples of sectors
+
   memory32s = sectorCount * sectorSize32s;
 
   BufferRanges ranges            = {};
@@ -531,6 +659,7 @@ void StreamingAllocator::init(Resources&                    res,
   m_shaderData.stats             = ranges.append(sizeof(shaderio::AllocatorStats), 8);
 
   res.createBuffer(m_managementBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
   NVVK_DBG_NAME(m_managementBuffer.buffer);
 
   m_shaderData.freeGapsPos += m_managementBuffer.address;
@@ -548,37 +677,59 @@ void StreamingAllocator::init(Resources&                    res,
   shaderData = m_shaderData;
 }
 
+
+// 函数：StreamingAllocator::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingAllocator::deinit(Resources& res)
 {
+
   res.m_allocator.destroyBuffer(m_managementBuffer);
 }
 
+
+// 函数：StreamingAllocator::getOperationsSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 size_t StreamingAllocator::getOperationsSize() const
 {
   return m_managementBuffer.bufferSize;
 }
 
+
+// 函数：StreamingAllocator::getMaxSized。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 uint32_t StreamingAllocator::getMaxSized() const
 {
   return m_shaderData.sectorMaxAllocationSized * m_shaderData.sectorCount;
 }
 
+
+// 函数：StreamingAllocator::cmdReset。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 void StreamingAllocator::cmdReset(VkCommandBuffer cmd)
 {
+
   vkCmdFillBuffer(cmd, m_managementBuffer.buffer, 0, m_managementBuffer.bufferSize, 0);
 }
 
+
+// 函数：StreamingAllocator::cmdBeginFrame。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 void StreamingAllocator::cmdBeginFrame(VkCommandBuffer cmd)
 {
-  // clears state to zero
+
   vkCmdFillBuffer(cmd, m_managementBuffer.buffer, m_shaderData.freeSizeRanges - m_managementBuffer.address,
                   sizeof(shaderio::AllocatorRange) * m_shaderData.maxAllocationSize, 0);
 }
 
-//////////////////////////////////////////////////////////////////////////
-//
-// StreamingUpdates
 
+// 函数：StreamingUpdates::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint32_t geometryCount, uint32_t groupCountAlignment, uint32_t clusterCountAlignment)
 {
   m_useBlasCaching        = config.allowBlasCaching;
@@ -589,9 +740,9 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
   memset(m_scheduledNew, 0, sizeof(m_scheduledNew));
   memset(m_scheduledNewFrame, 0, sizeof(m_scheduledNewFrame));
 
-  // some values are aligned up for easier gpu kernel access
 
   uint32_t loadRequests   = nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment);
+
   uint32_t unloadRequests = nvutils::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment);
 
   static_assert(sizeof(shaderio::StreamingGeometryPatch) <= sizeof(shaderio::StreamingPatch));
@@ -601,8 +752,10 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
   m_shaderData.patchUnloadGroupsCount = unloadRequests;
   if(config.allowBlasCaching)
   {
-    // caching up to only 1 blas per geometry
+
+
     uint32_t blasCount = std::min(geometryCount, config.maxPerFrameLoadRequests + config.maxPerFrameUnloadRequests);
+
 
     m_shaderData.patchCachedBlasCount = nvutils::align_up(blasCount, groupCountAlignment);
   }
@@ -612,21 +765,26 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
   uint32_t framePatchCount = m_shaderData.patchGroupsCount + m_shaderData.patchCachedBlasCount;
 
   m_unloadHandles = {};
+
   m_unloadHandles.resize(unloadRequests * STREAMING_MAX_ACTIVE_TASKS);
 
   std::vector<uint32_t> sharingQueueFamilies;
   if(config.useAsyncTransfer)
   {
+
     sharingQueueFamilies.push_back(res.m_queueStates.primary.m_familyIndex);
+
     sharingQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
   }
 
   res.createBufferTyped(m_patchesBuffer, framePatchCount * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
+
   NVVK_DBG_NAME(m_patchesBuffer.buffer);
 
   res.createBufferTyped(m_patchesHostBuffer, framePatchCount * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                         VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+
   NVVK_DBG_NAME(m_patchesHostBuffer.buffer);
 
   m_shaderData.patches = m_patchesBuffer.address;
@@ -642,17 +800,27 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
   }
 }
 
+
+// 函数：StreamingUpdates::getOperationsSize。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 size_t StreamingUpdates::getOperationsSize() const
 {
   return m_patchesBuffer.bufferSize;
 }
 
+
+// 函数：StreamingUpdates::initClas。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, const SceneConfig& sceneConfig)
 {
-  // some values are aligned up for easier gpu kernel access
+
 
   uint32_t maxLoadClusters =
+
       nvutils::align_up(config.maxPerFrameLoadRequests * sceneConfig.clusterGroupSize, m_clusterCountAlignment);
+
   uint32_t maxClusters = nvutils::align_up(config.maxClusters, m_clusterCountAlignment);
 
   BufferRanges ranges = {};
@@ -669,6 +837,7 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
 
   res.createBuffer(m_clasBuffer, ranges.getSize(),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+
   NVVK_DBG_NAME(m_clasBuffer.buffer);
 
   m_shaderData.newClasBuilds += m_clasBuffer.address;
@@ -680,18 +849,31 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
   m_shaderData.moveClasSrcAddresses += m_clasBuffer.address;
 }
 
+
+// 函数：StreamingUpdates::getClasOperationsSize。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 size_t StreamingUpdates::getClasOperationsSize() const
 {
   return m_clasBuffer.bufferSize;
 }
 
+
+// 函数：StreamingUpdates::getMaxCachedBlasBuilds。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 uint32_t StreamingUpdates::getMaxCachedBlasBuilds() const
 {
   return m_shaderData.patchCachedBlasCount;
 }
 
+
+// 函数：StreamingUpdates::deinitClas。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingUpdates::deinitClas(Resources& res)
 {
+
   res.m_allocator.destroyBuffer(m_clasBuffer);
 
   m_shaderData.newClasBuilds      = 0;
@@ -703,13 +885,24 @@ void StreamingUpdates::deinitClas(Resources& res)
   m_shaderData.moveClasSrcAddresses = 0;
 }
 
+
+// 函数：StreamingUpdates::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingUpdates::deinit(Resources& res)
 {
+
   deinitClas(res);
+
   res.m_allocator.destroyBuffer(m_patchesBuffer);
+
   res.m_allocator.destroyBuffer(m_patchesHostBuffer);
 }
 
+
+// 函数：StreamingUpdates::reset。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 void StreamingUpdates::reset()
 {
   m_pendingNew = {};
@@ -718,6 +911,10 @@ void StreamingUpdates::reset()
   m_scheduleIndex = 0;
 }
 
+
+// 函数：StreamingUpdates::getNewTask。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 lodclusters::StreamingUpdates::TaskInfo& StreamingUpdates::getNewTask(uint32_t taskIndex)
 {
   TaskInfo& task                   = m_taskInfos[taskIndex];
@@ -732,16 +929,22 @@ lodclusters::StreamingUpdates::TaskInfo& StreamingUpdates::getNewTask(uint32_t t
   return task;
 }
 
+
+// 函数：StreamingUpdates::cmdUploadTask。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 {
   const TaskInfo& task = m_taskInfos[taskIndex];
 
+
   assert(task.loadActiveGroupsOffset != ~0);
+
   assert(task.loadActiveClustersOffset != ~0);
 
   size_t transferSize = 0;
 
-  // copy from host buffer to device
+
   VkBufferCopy regions[3];
   uint32_t     regionCount = 0;
 
@@ -755,12 +958,12 @@ size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 
   if(task.unloadCount)
   {
-    // size of loads
+
     regions[regionCount].size = sizeof(shaderio::StreamingPatch) * (task.unloadCount);
-    // unload at start on host
+
     regions[regionCount].srcOffset += 0;
 
-    // append next region after ourselves
+
     regions[regionCount + 1].dstOffset = regions[regionCount].dstOffset + regions[regionCount].size;
 
     transferSize += regions[0].size;
@@ -770,12 +973,12 @@ size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 
   if(task.loadCount)
   {
-    // size of unloads
+
     regions[regionCount].size = sizeof(shaderio::StreamingPatch) * (task.loadCount);
-    // load after unload on host
+
     regions[regionCount].srcOffset += sizeof(shaderio::StreamingPatch) * m_shaderData.patchUnloadGroupsCount;
 
-    // append next region after ourselves
+
     regions[regionCount + 1].dstOffset = regions[regionCount].dstOffset + regions[regionCount].size;
 
     transferSize += regions[regionCount].size;
@@ -786,7 +989,7 @@ size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
   if(task.geometryCachedCount)
   {
     regions[regionCount].size = sizeof(shaderio::StreamingGeometryPatch) * (task.geometryCachedCount);
-    // geometry after unload and load on host
+
     regions[regionCount].srcOffset += sizeof(shaderio::StreamingPatch) * m_shaderData.patchGroupsCount;
 
     transferSize += regions[regionCount].size;
@@ -796,31 +999,36 @@ size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 
   if(regionCount)
   {
+
     vkCmdCopyBuffer(cmd, m_patchesHostBuffer.buffer, m_patchesBuffer.buffer, regionCount, regions);
   }
 
-  // we know this task will get scheduled eventually
+
   m_pendingNew.clusters += task.newClusterCount;
   m_pendingNew.groups += task.loadCount;
 
   return transferSize;
 }
 
+
+// 函数：StreamingUpdates::applyTask。根据最新状态刷新缓存数据、GPU 地址、描述符或统计信息。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：更新函数负责把“旧状态”推进到“当前状态”，因此要避免部分更新造成 CPU/GPU 视图不一致。
 void StreamingUpdates::applyTask(shaderio::StreamingUpdate& shaderData, uint32_t taskIndex, uint32_t frameIndex)
 {
   uint32_t framePatchCount = m_shaderData.patchGroupsCount + m_shaderData.patchCachedBlasCount;
 
   const TaskInfo& task = m_taskInfos[taskIndex];
-  // keep basics
+
   shaderData = m_shaderData;
-  // override counts
+
   shaderData.patchGroupsCount         = task.loadCount + task.unloadCount;
   shaderData.patchUnloadGroupsCount   = task.unloadCount;
   shaderData.patchCachedBlasCount     = task.geometryCachedCount;
   shaderData.patchCachedClustersCount = task.geometryCachedClustersCount;
   shaderData.newClasCount             = task.newClusterCount;
 
-  // adjust pointer offset
+
   shaderData.patches += sizeof(shaderio::StreamingPatch) * framePatchCount * taskIndex;
   shaderData.geometryPatches = shaderData.patches + sizeof(shaderio::StreamingPatch) * shaderData.patchGroupsCount;
   shaderData.taskIndex       = taskIndex;
@@ -828,10 +1036,9 @@ void StreamingUpdates::applyTask(shaderio::StreamingUpdate& shaderData, uint32_t
   shaderData.loadActiveGroupsOffset   = task.loadActiveGroupsOffset;
   shaderData.loadActiveClustersOffset = task.loadActiveClustersOffset;
 
-  // we also want to keep track of the total amount of "future" cluster builds.
-  // This is relevant to ray tracing, as the GPU's allocator need to provide enough
-  // space for this number of "worst case" cluster or group sizes.
+
   assert(m_pendingNew.clusters >= task.newClusterCount);
+
   assert(m_pendingNew.groups >= task.loadCount);
 
   m_pendingNew.clusters -= task.newClusterCount;
@@ -842,20 +1049,19 @@ void StreamingUpdates::applyTask(shaderio::StreamingUpdate& shaderData, uint32_t
   m_scheduleIndex++;
 }
 
-//////////////////////////////////////////////////////////////////////////
-//
-// StreamingGeometry
 
+// 函数：StreamingStorage::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void StreamingStorage::init(Resources& res, const StreamingConfig& config)
 {
   m_maxSceneBytes    = config.maxGeometryMegaBytes * 1024 * 1024;
   m_maxTransferBytes = config.maxTransferMegaBytes * 1024 * 1024;
-  
-  // 优化：根据实际使用情况调整块大小，减少内存碎片
-  // 对于大规模场景，使用更大的块大小
-  if(m_maxSceneBytes > 4 * 1024 * 1024 * 1024) // 4GB以上
+
+
+  if(m_maxSceneBytes > 4 * 1024 * 1024 * 1024)
     m_blockBytes = std::min(size_t(256) * 1024 * 1024, m_maxSceneBytes);
-  else if(m_maxSceneBytes > 1 * 1024 * 1024 * 1024) // 1GB以上
+  else if(m_maxSceneBytes > 1 * 1024 * 1024 * 1024)
     m_blockBytes = std::min(size_t(128) * 1024 * 1024, m_maxSceneBytes);
   else
     m_blockBytes = std::min(size_t(64) * 1024 * 1024, m_maxSceneBytes);
@@ -863,7 +1069,9 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
   m_dataQueueFamilies = {};
   if(config.useAsyncTransfer)
   {
+
     m_dataQueueFamilies.push_back(res.m_queueStates.primary.m_familyIndex);
+
     m_dataQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
 
     m_taskCommandPool.init(res.m_device, res.m_queueStates.transfer.m_familyIndex, nvvk::ManagedCommandPools::Mode::EXPLICIT_INDEX,
@@ -872,6 +1080,7 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
 
   res.createBuffer(m_transferHostBuffer, m_maxTransferBytes * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                    VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+
   NVVK_DBG_NAME(m_transferHostBuffer.buffer);
 
   m_dataInfo.blockSize         = m_blockBytes;
@@ -881,61 +1090,93 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
   m_dataInfo.resourceAllocator = &res.m_allocator;
   m_dataInfo.usageFlags =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  
-  // 优化：增加内存分配的对齐要求，提高内存访问效率
-  m_dataInfo.minAlignment = 16; // 16字节对齐，适合大多数GPU内存访问
+
+
+  m_dataInfo.minAlignment = 16;
+
 
   m_dataAllocator.init(m_dataInfo);
 
   m_copyRegions = {};
   m_copyInfos   = {};
-  
-  // 优化：根据实际需求调整预分配大小
+
+
   m_copyRegions.reserve(std::min(config.maxGroups, 2048u));
   m_copyInfos.reserve(std::min(config.maxGroups, 2048u));
 }
 
+
+// 函数：StreamingStorage::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingStorage::deinit(Resources& res)
 {
+
   res.m_allocator.destroyBuffer(m_transferHostBuffer);
+
   m_dataAllocator.deinit();
+
   m_taskCommandPool.deinit();
 
   m_copyInfos   = {};
   m_copyRegions = {};
 }
 
+
+// 函数：StreamingStorage::getOperationsSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 size_t StreamingStorage::getOperationsSize() const
 {
-  // the geometry storage is not tracked as fixed operations
+
   return 0;
 }
 
+
+// 函数：StreamingStorage::getMaxDataSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 size_t StreamingStorage::getMaxDataSize() const
 {
   return (m_maxSceneBytes / m_blockBytes) * m_blockBytes;
 }
 
+
+// 函数：StreamingStorage::getNewTask。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 lodclusters::StreamingStorage::TaskInfo& StreamingStorage::getNewTask(uint32_t taskIndex)
 {
   TaskInfo& task  = m_taskOperations[taskIndex];
   task.baseOffset = m_maxTransferBytes * taskIndex;
   task.usedMemory = 0;
 
+
   m_copyInfos.clear();
+
   m_copyRegions.clear();
 
   return task;
 }
 
+
+// 函数：StreamingStorage::canTransfer。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool StreamingStorage::canTransfer(const TaskInfo& task, size_t size) const
 {
   return task.usedMemory + size <= m_maxTransferBytes;
 }
 
+
+// 函数：StreamingStorage::appendTransfer。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllocation& dstHandle)
 {
+
   nvvk::BufferRange dstBinding = m_dataAllocator.subRange(dstHandle);
+
 
   assert(task.usedMemory + dstBinding.range <= m_maxTransferBytes);
 
@@ -947,41 +1188,49 @@ void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllo
 
   if(!m_copyInfos.empty() && m_copyInfos.back().targetBuffer == dstBinding.buffer)
   {
+
     VkBufferCopy& lastRegion = m_copyRegions.back();
 
-    // check if we can grow the last region
+
     if(lastRegion.dstOffset + lastRegion.size == dstBinding.offset)
     {
       lastRegion.size += dstBinding.range;
       return transferPointer;
     }
 
-    // otherwise append new region below
+
   }
   else
   {
-    // new target buffer
+
     CopyInfo task;
     task.targetBuffer = dstBinding.buffer;
+
     task.regionOffset = m_copyRegions.size();
     task.regionCount  = 0;
+
     m_copyInfos.push_back(task);
   }
 
   {
-    // append new region
+
     VkBufferCopy region;
     region.srcOffset = transferOffset;
     region.dstOffset = dstBinding.offset;
     region.size      = dstBinding.range;
 
     m_copyInfos.back().regionCount++;
+
     m_copyRegions.push_back(region);
   }
 
   return transferPointer;
 }
 
+
+// 函数：StreamingStorage::cmdUploadTask。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 uint32_t StreamingStorage::cmdUploadTask(VkCommandBuffer cmd)
 {
   for(auto it : m_copyInfos)
@@ -992,12 +1241,21 @@ uint32_t StreamingStorage::cmdUploadTask(VkCommandBuffer cmd)
   return uint32_t(m_copyRegions.size());
 }
 
+
+// 函数：StreamingStorage::reset。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void StreamingStorage::reset()
 {
+
   m_dataAllocator.deinit();
   NVVK_CHECK(m_dataAllocator.init(m_dataInfo));
 }
 
+
+// 函数：StreamingStorage::allocate。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool StreamingStorage::allocate(nvvk::BufferSubAllocation& handle, GeometryGroup group, size_t sz, uint64_t& deviceAddress)
 {
   if(m_dataAllocator.subAllocate(handle, sz) == VK_SUCCESS)
@@ -1011,17 +1269,28 @@ bool StreamingStorage::allocate(nvvk::BufferSubAllocation& handle, GeometryGroup
   }
 }
 
+
+// 函数：StreamingStorage::free。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void StreamingStorage::free(nvvk::BufferSubAllocation& handle)
 {
+
   assert(handle);
+
   m_dataAllocator.subFree(handle);
 }
 
+
+// 函数：StreamingStorage::getStats。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void StreamingStorage::getStats(StreamingStats& stats) const
 {
+
   nvvk::BufferSubAllocator::Report report = m_dataAllocator.getReport();
   stats.reservedDataBytes                 = report.freeSize + report.reservedSize;
   stats.usedDataBytes                     = report.requestedSize;
 }
 
-}  // namespace lodclusters
+}

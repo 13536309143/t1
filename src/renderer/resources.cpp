@@ -1,3 +1,13 @@
+//==============================================================================
+// 文件：src/renderer/resources.cpp
+// 模块定位：Vulkan 资源管理实现，创建和释放帧缓冲、临时命令、队列同步、着色器编译器和上传路径。
+// 数据流：输入是物理设备能力、窗口大小和资源请求；输出是可被 renderer 使用的 Vulkan 资源和同步状态。
+// 方法说明：实现层把 Vulkan 的底层状态机收敛为少量高层操作，降低 renderer 对同步细节的重复处理。
+// 正确性约束：图像 layout transition 必须匹配后续用途；staging 上传后要释放临时内存；统计内存应与分配路径同步更新。
+// 注释风格：使用中文解释 CPU 侧语义；保留必要的 API、类型名和数学缩写以便检索。
+//==============================================================================
+// 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
+// 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include <volk.h>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/logger.hpp>
@@ -6,15 +16,27 @@
 #include <nvvk/formats.hpp>
 #include "resources.hpp"
 
+
+// 命名空间说明：限制符号可见范围，并表明这些类型和函数属于同一功能域。
+// 该边界有助于区分应用层、渲染层、场景层和算法层的职责。
 namespace lodclusters {
 
+
+// 函数：Resources::beginFrame。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void Resources::beginFrame(uint32_t cycleIndex)
 {
   m_cycleIndex = cycleIndex;
 }
 
+
+// 函数：Resources::postProcessFrame。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
 {
+
   auto sec = profiler.cmdFrameSection(cmd, "Post-process");
 
   if(m_frameBuffer.useResolved)
@@ -31,16 +53,20 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
     region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.srcSubresource.layerCount = 1;
 
+
     cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
     cmdImageTransition(cmd, m_frameBuffer.imgColorResolved, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     vkCmdBlitImage(cmd, m_frameBuffer.imgColor.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    m_frameBuffer.imgColorResolved.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
 
+
     cmdImageTransition(cmd, m_frameBuffer.imgColorResolved, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
   else
   {
+
     cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
 
@@ -52,23 +78,35 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
     region.size      = sizeof(shaderio::Readback);
     region.srcOffset = 0;
     region.dstOffset = m_cycleIndex * sizeof(shaderio::Readback);
+
     vkCmdCopyBuffer(cmd, m_commonBuffers.readBack.buffer, m_commonBuffers.readBackHost.buffer, 1, &region);
   }
 }
 
 void Resources::endFrame() {}
 
+
+// 函数：Resources::emptyFrame。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void Resources::emptyFrame(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
 {
+
   auto sec = profiler.cmdFrameSection(cmd, "Render");
+
   cmdBeginRendering(cmd);
+
   vkCmdEndRendering(cmd);
 }
 
+
+// 函数：Resources::trackMemoryUsage。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void Resources::trackMemoryUsage(VkDeviceSize size, VmaMemoryUsage usage)
 {
   m_memoryUsage.total += size;
-  
+
   switch(usage)
   {
     case VMA_MEMORY_USAGE_GPU_ONLY:
@@ -84,32 +122,40 @@ void Resources::trackMemoryUsage(VkDeviceSize size, VmaMemoryUsage usage)
     case VMA_MEMORY_USAGE_AUTO:
     case VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE:
     case VMA_MEMORY_USAGE_AUTO_PREFER_HOST:
-      // For auto types, we'll just track as total for now
+
       break;
   }
 }
 
+
+// 函数：Resources::logMemoryUsage。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void Resources::logMemoryUsage() const
 {
+
   LOGI("Memory Usage:");
   LOGI("  Total: %s", formatMemorySize(m_memoryUsage.total).c_str());
   LOGI("  Device Local: %s", formatMemorySize(m_memoryUsage.deviceLocal).c_str());
   LOGI("  Host Visible: %s", formatMemorySize(m_memoryUsage.hostVisible).c_str());
   LOGI("  Host Cached: %s", formatMemorySize(m_memoryUsage.hostCached).c_str());
-  
+
   if(m_tempCmdBufferPool)
   {
-    LOGI("  Memory Pool: %zu blocks (%zu free)", 
-         m_tempCmdBufferPool->getTotalBlocks(), 
+    LOGI("  Memory Pool: %zu blocks (%zu free)",
+         m_tempCmdBufferPool->getTotalBlocks(),
          m_tempCmdBufferPool->getFreeBlocks());
   }
-  
-  LOGI("  Command Buffers: %u total, %u in use", 
-       m_cmdBufferCount, 
+
+  LOGI("  Command Buffers: %u total, %u in use",
+       m_cmdBufferCount,
        static_cast<uint32_t>(m_cmdBuffersInUse.size() - std::count(m_cmdBuffersInUse.begin(), m_cmdBuffersInUse.end(), false)));
 }
 
 
+// 函数：Resources::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstance instance, const nvvk::QueueInfo& queue, const nvvk::QueueInfo& queueTransfer)
 {
   m_device         = device;
@@ -117,7 +163,9 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   m_queue          = queue;
   m_queueTransfer  = queueTransfer;
 
+
   m_physicalDeviceInfo.init(physicalDevice);
+
   vkGetPhysicalDeviceMemoryProperties(physicalDevice, &m_memoryProperties);
 
   m_use16bitDispatch = m_physicalDeviceInfo.properties10.limits.maxComputeWorkGroupCount[0] < (1 << 30);
@@ -133,6 +181,7 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
       m_meshShaderPropsNV.pNext = props2.pNext;
       props2.pNext              = &m_meshShaderPropsNV;
     }
+
     vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
   }
 
@@ -146,15 +195,18 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
 
     NVVK_CHECK(m_allocator.init(allocatorInfo));
 
-    //m_allocator.setLeakID(30);
+
   }
+
 
   m_uploader.init(&m_allocator);
 
+
   m_samplerPool.init(device);
+
   m_samplerPool.acquireSampler(m_samplerLinear);
 
-  // temp command pool
+
   {
     VkCommandPoolCreateInfo createInfo = {
         .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -164,9 +216,11 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
 
     NVVK_CHECK(vkCreateCommandPool(m_device, &createInfo, nullptr, &m_tempCommandPool));
 
-    // Initialize command buffer pool
-    m_cmdBufferCount = 32; // Start with 32 command buffers to reduce dynamic扩容
+
+    m_cmdBufferCount = 32;
+
     m_cmdBuffers.resize(m_cmdBufferCount);
+
     m_cmdBuffersInUse.resize(m_cmdBufferCount, false);
 
     VkCommandBufferAllocateInfo allocInfo = {
@@ -179,13 +233,14 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     NVVK_CHECK(vkAllocateCommandBuffers(m_device, &allocInfo, m_cmdBuffers.data()));
   }
 
-  // Initialize memory pool for temporary data
+
   m_tempCmdBufferPool = std::make_unique<MemoryPool>(4096, 32);
 
   {
+
     std::filesystem::path                    exeDirectoryPath = nvutils::getExecutablePath().parent_path();
     const std::vector<std::filesystem::path> searchPaths      = {
-        // regular build
+
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_SOURCE_DIRECTORY / "shaders"),
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_SOURCE_DIRECTORY / "shaders" / "interface"),
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_SOURCE_DIRECTORY / "shaders" / "common"),
@@ -196,7 +251,7 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_SOURCE_DIRECTORY / "shaders" / "traversal"),
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_SOURCE_DIRECTORY / "shaders" / "build"),
         std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_NVSHADERS_DIRECTORY),
-        // install build
+
         std::filesystem::absolute(exeDirectoryPath / TARGET_NAME "_files" / "shaders"),
         std::filesystem::absolute(exeDirectoryPath / TARGET_NAME "_files" / "shaders" / "interface"),
         std::filesystem::absolute(exeDirectoryPath / TARGET_NAME "_files" / "shaders" / "common"),
@@ -208,13 +263,17 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
         std::filesystem::absolute(exeDirectoryPath / TARGET_NAME "_files" / "shaders" / "build"),
         std::filesystem::absolute(exeDirectoryPath),
     };
+
     m_glslCompiler.addSearchPaths(searchPaths);
+
     m_glslCompiler.defaultOptions();
+
     m_glslCompiler.defaultTarget();
+
     m_glslCompiler.options().SetGenerateDebugInfo();
   }
 
-  // common resources
+
   {
     m_allocator.createBuffer(m_commonBuffers.frameConstants, sizeof(shaderio::FrameConstants),
                              VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
@@ -233,16 +292,21 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     config.reversedZ               = true;
     config.supportsMinmaxFilter    = true;
     config.supportsSubGroupShuffle = true;
-    // 初始化HIZ，支持两个描述符集，用于两遍剔除模式
+
+
     m_hiz.init(m_device, config, 2);
-    //编译HIZ着色器
+
     shaderc::SpvCompilationResult shaderResults[NVHizVK::SHADER_COUNT];
     for(uint32_t i = 0; i < NVHizVK::SHADER_COUNT; i++)
     {
+
       shaderc::CompileOptions options = makeCompilerOptions();
+
       m_hiz.appendShaderDefines(i, options);
+
       compileShader(shaderResults[i], VK_SHADER_STAGE_COMPUTE_BIT, "post/hiz.comp.glsl", &options);
     }
+
     m_hiz.initPipelines(shaderResults);
   }
   {
@@ -251,59 +315,86 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     sorterCreateInfo.physicalDevice = m_physicalDevice;
     sorterCreateInfo.pipelineCache  = nullptr;
 
+
     vrdxCreateSorter(&sorterCreateInfo, &m_vrdxSorter);
   }
   {
+
     m_queueStates.primary.init(m_device, m_queue.queue, m_queue.familyIndex, 0);
+
     NVVK_DBG_NAME(m_queueStates.primary.m_timelineSemaphore);
 
+
     m_queueStates.transfer.init(m_device, m_queueTransfer.queue, m_queueTransfer.familyIndex, 0);
+
     NVVK_DBG_NAME(m_queueStates.transfer.m_timelineSemaphore);
   }
 }
 
+
+// 函数：Resources::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void Resources::deinit()
 {
   NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
+
   m_allocator.destroyBuffer(m_commonBuffers.frameConstants);
+
   m_allocator.destroyBuffer(m_commonBuffers.readBack);
+
   m_allocator.destroyBuffer(m_commonBuffers.readBackHost);
-  
-  // Free command buffers
+
+
   if(!m_cmdBuffers.empty())
   {
     vkFreeCommandBuffers(m_device, m_tempCommandPool, m_cmdBufferCount, m_cmdBuffers.data());
   }
-  
+
+
   vkDestroyCommandPool(m_device, m_tempCommandPool, nullptr);
+
   deinitFramebuffer();
+
   m_hiz.deinit();
+
   vrdxDestroySorter(m_vrdxSorter);
+
   m_queueStates.primary.deinit();
+
   m_queueStates.transfer.deinit();
 
+
   m_samplerPool.releaseSampler(m_samplerLinear);
+
   m_samplerPool.deinit();
+
   m_uploader.deinit();
+
   m_allocator.deinit();
 }
 
+
+// 函数：Resources::initFramebuffer。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 {
-  // Check if we can reuse existing framebuffer resources
+
   bool needsRecreation = false;
   bool wasResize = false;
 
   if(m_frameBuffer.imgColor.image != 0)
   {
-    // Check if dimensions or supersample setting have changed
+
     bool sizeChanged = (m_frameBuffer.targetSize.width != windowSize.width * std::min(supersample, 4) ||
                         m_frameBuffer.targetSize.height != windowSize.height * std::min(supersample, 4));
     bool supersampleChanged = (m_frameBuffer.supersample != supersample);
 
     if(sizeChanged || supersampleChanged)
     {
+
       deinitFramebuffer();
       wasResize = true;
       needsRecreation = true;
@@ -316,7 +407,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 
   if(!needsRecreation)
   {
-    // Just update window size if needed
+
     m_frameBuffer.windowSize = windowSize;
     return true;
   }
@@ -356,11 +447,13 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
       m_frameBuffer.targetSize.height = 4096;
       break;
     default:
+
       m_frameBuffer.targetSize.width  = windowSize.width * std::min(supersample, 4);
+
       m_frameBuffer.targetSize.height = windowSize.height * std::min(supersample, 4);
       break;
   }
-  
+
   m_frameBuffer.pixelScale = std::max(float(m_frameBuffer.targetSize.width) / float(windowSize.width),
                                       float(m_frameBuffer.targetSize.height) / float(windowSize.height));
   m_basicGraphicsState.rasterizationState.lineWidth = m_frameBuffer.pixelScale;
@@ -374,7 +467,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 
   VkSampleCountFlagBits samplesUsed = VK_SAMPLE_COUNT_1_BIT;
   {
-    // color
+
     VkImageCreateInfo cbImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     cbImageInfo.imageType         = VK_IMAGE_TYPE_2D;
     cbImageInfo.format            = m_frameBuffer.colorFormat;
@@ -405,13 +498,15 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     cbImageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
 
     NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgColor, cbImageInfo, cbImageViewInfo));
+
     NVVK_DBG_NAME(m_frameBuffer.imgColor.image);
+
     NVVK_DBG_NAME(m_frameBuffer.imgColor.descriptor.imageView);
   }
 
   if(m_frameBuffer.useResolved)
   {
-    // resolve image
+
     VkImageCreateInfo resImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     resImageInfo.imageType         = VK_IMAGE_TYPE_2D;
     resImageInfo.format            = m_frameBuffer.colorFormat;
@@ -442,15 +537,19 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     resImageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
 
     NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgColorResolved, resImageInfo, resImageViewInfo));
+
     NVVK_DBG_NAME(m_frameBuffer.imgColorResolved.image);
+
     NVVK_DBG_NAME(m_frameBuffer.imgColorResolved.descriptor.imageView);
   }
 
 
-  // initial resource transitions
   {
+
     VkCommandBuffer cmd = createTempCmdBuffer();
+
     updateFramebufferRenderSizeDependent(cmd);
+
     tempSyncSubmit(cmd);
   }
 
@@ -468,11 +567,15 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
   return true;
 }
 
+
+// 函数：Resources::updateFramebufferRenderSizeDependent。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 {
   VkSampleCountFlagBits samplesUsed = VK_SAMPLE_COUNT_1_BIT;
 
-  // depth stencil
+
   m_frameBuffer.depthStencilFormat = nvvk::findDepthStencilFormat(m_physicalDevice);
 
   {
@@ -505,7 +608,9 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     dsImageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_STENCIL_BIT | VK_IMAGE_ASPECT_DEPTH_BIT;
 
     NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgDepthStencil, dsImageInfo, dsImageViewInfo));
+
     NVVK_DBG_NAME(m_frameBuffer.imgDepthStencil.image);
+
     NVVK_DBG_NAME(m_frameBuffer.imgDepthStencil.descriptor.imageView);
 
     dsImageViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -515,7 +620,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   }
 
   {
-    // compute rasterization
+
     VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageInfo.imageType         = VK_IMAGE_TYPE_2D;
     imageInfo.format            = VK_FORMAT_R64_UINT;
@@ -545,29 +650,31 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     imageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
 
     NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgRasterAtomic, imageInfo, imageViewInfo));
+
     NVVK_DBG_NAME(m_frameBuffer.imgRasterAtomic.image);
+
     NVVK_DBG_NAME(m_frameBuffer.imgRasterAtomic.descriptor.imageView);
   }
 
-  // 检查并更新HIZ资源
+
   for(uint32_t i = 0; i < 2; i++)
   {
-    // 设置HIZ更新信息
+
     m_hiz.setupUpdateInfos(m_hizUpdate[i], m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height,
                            m_frameBuffer.depthStencilFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 
-    // 检查是否需要重新创建HIZ图像
+
     bool needsRecreate = false;
     if(m_frameBuffer.imgHizFar[i].image == VK_NULL_HANDLE) {
       needsRecreate = true;
     } else {
-      // 这里可以添加尺寸和格式检查，判断是否需要重新创建
-      // 暂时简化处理，总是重新创建以确保正确性
+
+
       needsRecreate = true;
     }
-    
+
     if(needsRecreate) {
-      // 创建新的HIZ图像
+
       VkImageCreateInfo hizImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
       hizImageInfo.imageType         = VK_IMAGE_TYPE_2D;
       hizImageInfo.format            = m_hizUpdate[i].farInfo.format;
@@ -581,29 +688,34 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
       hizImageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
       hizImageInfo.flags = 0;
       hizImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      
-      // 销毁旧图像并创建新图像
+
+
       m_allocator.destroyImage(m_frameBuffer.imgHizFar[i]);
       NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgHizFar[i], hizImageInfo));
+
       NVVK_DBG_NAME(m_frameBuffer.imgHizFar[i].image);
     }
 
-    // 更新HIZ更新信息
+
     m_hizUpdate[i].sourceImage = m_frameBuffer.imgDepthStencil.image;
     m_hizUpdate[i].farImage    = m_frameBuffer.imgHizFar[i].image;
     m_hizUpdate[i].nearImage   = VK_NULL_HANDLE;
-    
-    // 重新初始化视图并更新描述符集
+
+
     m_hiz.deinitUpdateViews(m_hizUpdate[i]);
+
     m_hiz.initUpdateViews(m_hizUpdate[i]);
+
     m_hiz.updateDescriptorSet(m_hizUpdate[i], i);
   }
-  //cmdImageTransition(cmd, m_frameBuffer.imgHizFar, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
-  //锟斤拷始锟斤拷锟斤拷锟斤拷 HIZ 锟侥诧拷锟斤拷为 GENERAL
+
+
   cmdImageTransition(cmd, m_frameBuffer.imgHizFar[0], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+
   cmdImageTransition(cmd, m_frameBuffer.imgHizFar[1], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
   if(m_frameBuffer.imgRasterAtomic.image)
   {
+
     cmdImageTransition(cmd, m_frameBuffer.imgRasterAtomic, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
   }
 
@@ -620,7 +732,9 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     subResourceRange.baseMipLevel   = 0;
     subResourceRange.layerCount     = VK_REMAINING_ARRAY_LAYERS;
     subResourceRange.levelCount     = VK_REMAINING_MIP_LEVELS;
+
     vkCmdClearColorImage(cmd, m_frameBuffer.imgHizFar[0].image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &subResourceRange);
+
     vkCmdClearColorImage(cmd, m_frameBuffer.imgHizFar[1].image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &subResourceRange);
   }
 
@@ -629,7 +743,9 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     VkRect2D   sc;
     vp.x        = 0;
     vp.y        = 0;
+
     vp.width    = float(m_frameBuffer.renderSize.width);
+
     vp.height   = float(m_frameBuffer.renderSize.height);
     vp.minDepth = 0.0f;
     vp.maxDepth = 1.0f;
@@ -643,60 +759,95 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   }
 }
 
+
+// 函数：Resources::deinitFramebufferRenderSizeDependent。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void Resources::deinitFramebufferRenderSizeDependent()
 {
-    //确锟斤拷锟斤拷锟斤拷 HIZ 锟斤拷锟斤拷锟斤拷确锟斤拷锟斤拷
+
+
   m_allocator.destroyImage(m_frameBuffer.imgDepthStencil);
-  //m_allocator.destroyImage(m_frameBuffer.imgHizFar);
+
+
   m_allocator.destroyImage(m_frameBuffer.imgHizFar[0]);
+
   m_allocator.destroyImage(m_frameBuffer.imgHizFar[1]);
+
   m_allocator.destroyImage(m_frameBuffer.imgRasterAtomic);
+
 
   vkDestroyImageView(m_device, m_frameBuffer.viewDepth, nullptr);
   m_frameBuffer.viewDepth = VK_NULL_HANDLE;
-  //  m_hiz.deinitUpdateViews(m_hizUpdate);
+
+
   m_hiz.deinitUpdateViews(m_hizUpdate[0]);
+
   m_hiz.deinitUpdateViews(m_hizUpdate[1]);
 }
 
+
+// 函数：Resources::deinitFramebuffer。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void Resources::deinitFramebuffer()
 {
   NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
+
   m_allocator.destroyImage(m_frameBuffer.imgColor);
+
   m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
+
 
   deinitFramebufferRenderSizeDependent();
 }
 
+
+// 函数：Resources::getFramebufferWindow2RenderScale。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 glm::vec2 Resources::getFramebufferWindow2RenderScale() const
 {
   if(m_frameBuffer.supersample >= 720)
   {
-    // for fixed resolutions
+
     return glm::vec2(1, 1);
   }
 
   return glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
+
          / glm::vec2(m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
 }
 
+
+// 函数：Resources::getReadbackData。从文件、缓存、GPU 缓冲或共享布局中读取数据并转换为本模块格式。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
 void Resources::getReadbackData(shaderio::Readback& readback)
 {
+
   const shaderio::Readback* pReadback = m_commonBuffers.readBackHost.data();
   readback                            = pReadback[m_cycleIndex];
 }
-//void Resources::cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
+
+
+// 函数：Resources::cmdBuildHiz。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 void Resources::cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, uint32_t idx)
 {
+
   auto timerSection = profiler.cmdFrameSection(cmd, "HiZ");
 
-  // 只转换深度部分，不需要包含模板部分
+
   cmdImageTransition(cmd, m_frameBuffer.imgDepthStencil, VK_IMAGE_ASPECT_DEPTH_BIT,
                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-  // 执行HIZ更新
+
+
   m_hiz.cmdUpdateHiz(cmd, m_hizUpdate[idx], idx);
-  // 转换HIZ图像回通用布局，供后续使用
+
+
   cmdImageTransition(cmd, m_frameBuffer.imgHizFar[idx], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
 }
 
@@ -710,8 +861,10 @@ bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
   {
     if(m_dumpSpirv)
     {
-      // dump spirv files for improved aftermath debugging
+
+
       std::filesystem::path dumpFile = filePath.filename();
+
       dumpFile.replace_extension("spirv");
 
       nvutils::dumpSpirv(dumpFile, nvvkglsl::GlslCompiler::getSpirv(compiled), nvvkglsl::GlslCompiler::getSpirvSize(compiled));
@@ -720,6 +873,7 @@ bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
   }
   else
   {
+
     std::string errorMessage = compiled.GetErrorMessage();
     if(!errorMessage.empty())
       nvutils::Logger::getInstance().log(nvutils::Logger::LogLevel::eWARNING, "%s", errorMessage.c_str());
@@ -727,9 +881,13 @@ bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
   }
 }
 
+
+// 函数：Resources::createTempCmdBuffer。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 VkCommandBuffer Resources::createTempCmdBuffer()
 {
-  // Find an available command buffer
+
   for(uint32_t i = 0; i < m_cmdBufferCount; i++)
   {
     if(!m_cmdBuffersInUse[i])
@@ -747,16 +905,26 @@ VkCommandBuffer Resources::createTempCmdBuffer()
     }
   }
 
-  // No available command buffer, allocate more
+
   uint32_t newCount = m_cmdBufferCount * 2;
+
+
+  // 函数：newCmdBuffers。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+  // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+  // 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
   std::vector<VkCommandBuffer> newCmdBuffers(newCount);
+
+
+  // 函数：newCmdBuffersInUse。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+  // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+  // 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
   std::vector<bool> newCmdBuffersInUse(newCount, false);
 
-  // Copy existing command buffers
+
   std::copy(m_cmdBuffers.begin(), m_cmdBuffers.end(), newCmdBuffers.begin());
   std::copy(m_cmdBuffersInUse.begin(), m_cmdBuffersInUse.end(), newCmdBuffersInUse.begin());
 
-  // Allocate new command buffers
+
   VkCommandBufferAllocateInfo allocInfo = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
       .commandPool = m_tempCommandPool,
@@ -766,12 +934,13 @@ VkCommandBuffer Resources::createTempCmdBuffer()
 
   NVVK_CHECK(vkAllocateCommandBuffers(m_device, &allocInfo, newCmdBuffers.data() + m_cmdBufferCount));
 
-  // Update member variables
+
   m_cmdBuffers = std::move(newCmdBuffers);
+
   m_cmdBuffersInUse = std::move(newCmdBuffersInUse);
   m_cmdBufferCount = newCount;
 
-  // Use the first newly allocated command buffer
+
   m_cmdBuffersInUse[m_cmdBufferCount - (newCount - m_cmdBufferCount)] = true;
   VkCommandBuffer cmd = m_cmdBuffers[m_cmdBufferCount - (newCount - m_cmdBufferCount)];
 
@@ -784,8 +953,13 @@ VkCommandBuffer Resources::createTempCmdBuffer()
   return cmd;
 }
 
+
+// 函数：Resources::tempSyncSubmit。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 void Resources::tempSyncSubmit(VkCommandBuffer cmd)
 {
+
   vkEndCommandBuffer(cmd);
 
   VkCommandBufferSubmitInfo cmdInfo = {
@@ -803,7 +977,7 @@ void Resources::tempSyncSubmit(VkCommandBuffer cmd)
   NVVK_CHECK(vkQueueSubmit2(m_queue.queue, 1, &submitInfo2, nullptr));
   NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
-  // Mark the command buffer as available for reuse
+
   for(uint32_t i = 0; i < m_cmdBufferCount; i++)
   {
     if(m_cmdBuffers[i] == cmd)
@@ -814,10 +988,15 @@ void Resources::tempSyncSubmit(VkCommandBuffer cmd)
   }
 }
 
+
+// 函数：Resources::cmdBeginRendering。录制或执行渲染相关工作，把准备好的数据提交到当前渲染阶段。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：渲染函数通常处于帧级关键路径，必须尊重前序计算阶段写出的计数、地址和同步屏障。
 void Resources::cmdBeginRendering(VkCommandBuffer cmd, bool hasSecondary, VkAttachmentLoadOp loadOpColor, VkAttachmentLoadOp loadOpDepth)
 {
   VkClearValue colorClear{.color = {m_bgColor.x, m_bgColor.y, m_bgColor.z, m_bgColor.w}};
   VkClearValue depthClear{.depthStencil = {0.0F, 0}};
+
 
   cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
   cmdImageTransition(cmd, m_frameBuffer.imgDepthStencil, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
@@ -832,7 +1011,7 @@ void Resources::cmdBeginRendering(VkCommandBuffer cmd, bool hasSecondary, VkAtta
       .clearValue  = colorClear,
   };
 
-  // Shared depth attachment
+
   VkRenderingAttachmentInfo depthStencilAttachment{
       .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
       .imageView   = m_frameBuffer.imgDepthStencil.descriptor.imageView,
@@ -842,7 +1021,7 @@ void Resources::cmdBeginRendering(VkCommandBuffer cmd, bool hasSecondary, VkAtta
       .clearValue  = depthClear,
   };
 
-  // Dynamic rendering information: color and depth attachments
+
   VkRenderingInfo renderingInfo{
       .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
       .flags                = hasSecondary ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : VkRenderingFlags(0),
@@ -853,12 +1032,19 @@ void Resources::cmdBeginRendering(VkCommandBuffer cmd, bool hasSecondary, VkAtta
       .pDepthAttachment     = &depthStencilAttachment,
   };
 
+
   vkCmdBeginRendering(cmd, &renderingInfo);
 
+
   vkCmdSetViewportWithCount(cmd, 1, &m_frameBuffer.viewport);
+
   vkCmdSetScissorWithCount(cmd, 1, &m_frameBuffer.scissor);
 }
 
+
+// 函数：Resources::cmdImageTransition。向命令缓冲录制 GPU 操作，并依赖外层调用者安排提交与同步。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该类函数只描述命令序列，不应假设命令已经立即执行。
 void Resources::cmdImageTransition(VkCommandBuffer cmd, nvvk::Image& rimg, VkImageAspectFlags aspects, VkImageLayout newLayout, bool needBarrier) const
 {
   if(newLayout == rimg.descriptor.imageLayout && !needBarrier)
@@ -869,25 +1055,30 @@ void Resources::cmdImageTransition(VkCommandBuffer cmd, nvvk::Image& rimg, VkIma
   imageBarrier.newLayout                   = newLayout;
   imageBarrier.subresourceRange.aspectMask = aspects;
 
+
   nvvk::cmdImageMemoryBarrier(cmd, imageBarrier);
 
   rimg.descriptor.imageLayout = newLayout;
 }
 
+
+// 函数：Resources::getDeviceLocalHeapSize。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 VkDeviceSize Resources::getDeviceLocalHeapSize() const
 {
   const VkPhysicalDeviceMemoryProperties& memProperties = m_memoryProperties;
 
   for(uint32_t type = 0; type < memProperties.memoryTypeCount; type++)
   {
-    // find the heap that is purely tagged as device local
+
     if(memProperties.memoryTypes[type].propertyFlags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
     {
       return memProperties.memoryHeaps[memProperties.memoryTypes[type].heapIndex].size;
     }
   }
 
-  // otherwise take something that is device local and host visible
+
   for(uint32_t type = 0; type < memProperties.memoryTypeCount; type++)
   {
     if((memProperties.memoryTypes[type].propertyFlags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
@@ -896,17 +1087,27 @@ VkDeviceSize Resources::getDeviceLocalHeapSize() const
       return memProperties.memoryHeaps[memProperties.memoryTypes[type].heapIndex].size;
     }
   }
+
   assert(0);
   return 0;
 }
 
+
+// 函数：Resources::isBufferSizeValid。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 bool Resources::isBufferSizeValid(VkDeviceSize size) const
 {
   return size <= m_physicalDeviceInfo.properties13.maxBufferSize && size <= m_physicalDeviceInfo.properties11.maxMemoryAllocationSize;
 }
 
+
+// 函数：QueueState::init。初始化本模块所需状态、资源或 GPU 侧绑定。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：初始化过程建立后续阶段假定存在的不变量，例如句柄有效、缓冲大小足够、描述符已绑定。
 void QueueState::init(VkDevice device, VkQueue queue, uint32_t familyIndex, uint64_t initialValue)
 {
+
   assert(m_device == nullptr);
 
   m_device      = device;
@@ -920,20 +1121,30 @@ void QueueState::init(VkDevice device, VkQueue queue, uint32_t familyIndex, uint
   VkSemaphoreCreateInfo     semaphoreCreateInfo{
           .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timelineSemaphoreCreateInfo, .flags = 0};
 
+
   vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &m_timelineSemaphore);
 
   m_device        = device;
   m_timelineValue = initialValue + 1;
 }
 
+
+// 函数：QueueState::deinit。释放或回收前面初始化的资源，保持生命周期成对管理。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：释放顺序要遵守资源依赖关系，避免 GPU 仍可能访问的对象被提前销毁。
 void QueueState::deinit()
 {
   if(!m_device)
     return;
+
   vkDestroySemaphore(m_device, m_timelineSemaphore, nullptr);
 }
 
-VkSemaphoreSubmitInfo QueueState::getWaitSubmit(VkPipelineStageFlags2 stageMask, uint32_t deviceIndex /*= 0*/) const
+
+// 函数：QueueState::getWaitSubmit。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
+VkSemaphoreSubmitInfo QueueState::getWaitSubmit(VkPipelineStageFlags2 stageMask, uint32_t deviceIndex ) const
 {
   VkSemaphoreSubmitInfo signalSubmitInfo{.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                          .pNext       = nullptr,
@@ -944,7 +1155,12 @@ VkSemaphoreSubmitInfo QueueState::getWaitSubmit(VkPipelineStageFlags2 stageMask,
 
   return signalSubmitInfo;
 }
-VkSemaphoreSubmitInfo QueueState::advanceSignalSubmit(VkPipelineStageFlags2 stageMask, uint32_t deviceIndex /*= 0*/)
+
+
+// 函数：QueueState::advanceSignalSubmit。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
+// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
+// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
+VkSemaphoreSubmitInfo QueueState::advanceSignalSubmit(VkPipelineStageFlags2 stageMask, uint32_t deviceIndex )
 {
   VkSemaphoreSubmitInfo signalSubmitInfo{.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                          .pNext       = nullptr,
@@ -955,4 +1171,4 @@ VkSemaphoreSubmitInfo QueueState::advanceSignalSubmit(VkPipelineStageFlags2 stag
 
   return signalSubmitInfo;
 }
-}  // namespace lodclusters
+}
