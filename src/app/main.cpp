@@ -52,18 +52,18 @@ using namespace lodclusters;
 // 设计要点：该入口位于控制流根部，调用顺序决定后续资源生命周期和数据依赖。
 int main(int argc, char** argv)
 {
-  nvapp::ApplicationCreateInfo appInfo;
-  appInfo.name    = TARGET_NAME;
-  appInfo.useMenu = true;
-  appInfo.vSync = false;
-  VkPhysicalDeviceShaderSMBuiltinsFeaturesNV smNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_FEATURES_NV};
-  VkPhysicalDeviceMeshShaderFeaturesNV       meshNV  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
-  VkPhysicalDeviceMeshShaderFeaturesEXT      meshEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
-  VkPhysicalDeviceAccelerationStructureFeaturesKHR accKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
-  VkPhysicalDeviceRayQueryFeaturesKHR rayQueryKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  nvapp::ApplicationCreateInfo appInfo;//应用程序创建信息结构体，包含 Vulkan 上下文配置、窗口设置、UI 选项和其他全局参数。
+  appInfo.name    = TARGET_NAME;//设置应用程序名称
+  appInfo.useMenu = true;//启用菜单
+  appInfo.vSync = false;//禁用垂直同步以获得更高的帧率，适合性能测试和基准评测
+  VkPhysicalDeviceShaderSMBuiltinsFeaturesNV smNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_FEATURES_NV};//声明一个结构体实例，用于查询和启用 NVIDIA Shader SM Builtins 扩展的功能，初始化 sType 字段以便后续链式结构使用
+  VkPhysicalDeviceMeshShaderFeaturesNV       meshNV  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};//声明一个结构体实例，用于查询和启用 NVIDIA Mesh Shader 扩展的功能，初始化 sType 字段以便后续链式结构使用
+  VkPhysicalDeviceMeshShaderFeaturesEXT      meshEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};//声明一个结构体实例，用于查询和启用通用 Mesh Shader EXT 扩展的功能，初始化 sType 字段以便后续链式结构使用
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR accKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};//声明一个结构体实例，用于查询和启用加速结构 KHR 扩展的功能，初始化 sType 字段以便后续链式结构使用
+  VkPhysicalDeviceRayQueryFeaturesKHR rayQueryKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};//声明一个结构体实例，用于查询和启用光线查询 KHR 扩展的功能，初始化 sType 字段以便后续链式结构使用
   VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clustersNV = {
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};
-  VkPhysicalDeviceShaderClockFeaturesKHR clockKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};//声明一个结构体实例，用于查询和启用集群加速结构 NV 扩展的功能，初始化 sType 字段以便后续链式结构使用
+  VkPhysicalDeviceShaderClockFeaturesKHR clockKHR = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};//声明一个结构体实例，用于查询和启用着色器时钟 KHR 扩展的功能，初始化 sType 字段以便后续链式结构使用
   VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
   VkPhysicalDeviceFragmentShadingRateFeaturesKHR shadingRateFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
   VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentricFeatures{
@@ -72,19 +72,19 @@ int main(int argc, char** argv)
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT};
 
   nvvk::ContextInitInfo vkSetup{
-      .instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME},
-      .deviceExtensions   = {{VK_KHR_SWAPCHAIN_EXTENSION_NAME}},
-      .queues             = {VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_TRANSFER_BIT},
+      .instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME},//实例层面启用调试工具扩展
+      .deviceExtensions   = {{VK_KHR_SWAPCHAIN_EXTENSION_NAME}},//显卡是否支持 Swapchain 扩展
+      .queues             = {VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_TRANSFER_BIT},//请求图形和传输队列
   };
 
-  vkSetup.deviceExtensions.push_back({VK_EXT_MESH_SHADER_EXTENSION_NAME, &meshEXT});
-  vkSetup.deviceExtensions.push_back({VK_KHR_SHADER_CLOCK_EXTENSION_NAME, &clockKHR});
-  vkSetup.deviceExtensions.push_back({VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, &atomicFloatFeatures});
+  vkSetup.deviceExtensions.push_back({VK_EXT_MESH_SHADER_EXTENSION_NAME, &meshEXT});//请求 Mesh Shader EXT 扩展以支持更广泛的设备，NV Mesh Shader 是其子集
+  vkSetup.deviceExtensions.push_back({VK_KHR_SHADER_CLOCK_EXTENSION_NAME, &clockKHR});//请求 Shader Clock 扩展以支持着色器时钟功能
+  vkSetup.deviceExtensions.push_back({VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, &atomicFloatFeatures});//请求 Shader Atomic Float 扩展以支持着色器原子浮点操作
 
 
-  vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, &shadingRateFeatures});
+  vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, &shadingRateFeatures});//请求 Fragment Shading Rate 扩展以支持可变速率着色器功能
 
-  vkSetup.deviceExtensions.push_back({VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME, &shaderImageAtomic64Features});
+  vkSetup.deviceExtensions.push_back({VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME, &shaderImageAtomic64Features});//请求 Shader Image Atomic Int64 扩展以支持着色器图像原子64位操作
 
 #if 1
 
