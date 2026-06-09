@@ -11,7 +11,7 @@
 #include <float.h>
 #include <unordered_map>
 #include <string>
-#include <fmt/format.h>
+#include <array>
 #include <glm/gtc/type_ptr.hpp>
 #include <cgltf.h>
 #include <meshoptimizer.h>
@@ -259,6 +259,265 @@ inline glm::vec4 quantizeFloat(const glm::vec4& vec, uint32_t dropBits)
   res.w = quantizeFloat(vec.w, dropBits);
   return res;
 }
+
+struct GeometryFingerprint
+{
+  uint64_t hash0         = 1469598103934665603ull;
+  uint64_t hash1         = 1099511628211ull;
+  uint64_t triangleCount = 0;
+  uint64_t vertexCount   = 0;
+  uint32_t attributeBits = 0;
+
+  bool operator==(const GeometryFingerprint& other) const
+  {
+    return hash0 == other.hash0 && hash1 == other.hash1 && triangleCount == other.triangleCount
+           && vertexCount == other.vertexCount && attributeBits == other.attributeBits;
+  }
+};
+
+struct GeometryFingerprintHasher
+{
+  size_t operator()(const GeometryFingerprint& fp) const
+  {
+    uint64_t h = fp.hash0 ^ (fp.hash1 + 0x9e3779b97f4a7c15ull + (fp.hash0 << 6) + (fp.hash0 >> 2));
+    h ^= fp.triangleCount + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    h ^= fp.vertexCount + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    h ^= fp.attributeBits + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    return size_t(h);
+  }
+};
+
+void fingerprintBytes(GeometryFingerprint& fp, const void* data, size_t size)
+{
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+  for(size_t i = 0; i < size; ++i)
+  {
+    fp.hash0 ^= bytes[i];
+    fp.hash0 *= 1099511628211ull;
+    fp.hash1 ^= uint64_t(bytes[i]) + 0x9e3779b97f4a7c15ull + (fp.hash1 << 6) + (fp.hash1 >> 2);
+  }
+}
+
+template <typename T>
+void fingerprintValue(GeometryFingerprint& fp, const T& value)
+{
+  fingerprintBytes(fp, &value, sizeof(T));
+}
+
+const cgltf_accessor* findAttributeAccessor(const cgltf_primitive* primitive, const char* name)
+{
+  for(size_t attribIdx = 0; attribIdx < primitive->attributes_count; attribIdx++)
+  {
+    const cgltf_attribute& attrib = primitive->attributes[attribIdx];
+    if(strcmp(attrib.name, name) == 0)
+    {
+      return attrib.data;
+    }
+  }
+
+  return nullptr;
+}
+
+uint32_t computeMeshAttributeBits(const cgltf_mesh& mesh, const lodclusters::SceneConfig& config)
+{
+  uint32_t attributeBits = 0;
+
+  for(size_t primIdx = 0; primIdx < mesh.primitives_count; primIdx++)
+  {
+    const cgltf_primitive* primitive = &mesh.primitives[primIdx];
+    if(primitive->type != cgltf_primitive_type_triangles || primitive->attributes_count == 0)
+    {
+      continue;
+    }
+
+    if((config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL) && findAttributeAccessor(primitive, "NORMAL"))
+    {
+      attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL;
+    }
+    if((config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT) && findAttributeAccessor(primitive, "TANGENT"))
+    {
+      attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT;
+    }
+    if((config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0) && findAttributeAccessor(primitive, "TEXCOORD_0"))
+    {
+      attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0;
+    }
+    if((config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1) && findAttributeAccessor(primitive, "TEXCOORD_1"))
+    {
+      attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1;
+    }
+  }
+
+  if(!(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL))
+  {
+    attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT;
+  }
+  if(!(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
+  {
+    attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT;
+    attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1;
+  }
+
+  return attributeBits;
+}
+
+void fingerprintMissingAccessor(GeometryFingerprint& fp)
+{
+  uint32_t missing = 0xffffffffu;
+  fingerprintValue(fp, missing);
+}
+
+void fingerprintCompressedAccessorStorage(GeometryFingerprint& fp, const cgltf_accessor* accessor)
+{
+  if(!accessor)
+  {
+    fingerprintMissingAccessor(fp);
+    return;
+  }
+
+  fingerprintValue(fp, accessor->component_type);
+  fingerprintValue(fp, accessor->type);
+  fingerprintValue(fp, accessor->count);
+  fingerprintValue(fp, accessor->offset);
+  fingerprintValue(fp, accessor->stride);
+
+  const cgltf_buffer_view* view = accessor->buffer_view;
+  if(!view)
+  {
+    return;
+  }
+
+  if(view->has_meshopt_compression)
+  {
+    const cgltf_meshopt_compression& mc = view->meshopt_compression;
+    fingerprintValue(fp, mc.mode);
+    fingerprintValue(fp, mc.filter);
+    fingerprintValue(fp, mc.count);
+    fingerprintValue(fp, mc.stride);
+    fingerprintValue(fp, mc.offset);
+    fingerprintValue(fp, mc.size);
+    if(mc.buffer && mc.buffer->data)
+    {
+      const uint8_t* source = reinterpret_cast<const uint8_t*>(mc.buffer->data) + mc.offset;
+      fingerprintBytes(fp, source, mc.size);
+    }
+  }
+}
+
+void fingerprintFloatAccessor(GeometryFingerprint&  fp,
+                              const cgltf_accessor* accessor,
+                              cgltf_type            expectedType,
+                              size_t                componentCount,
+                              uint32_t              dropBits)
+{
+  if(!accessor)
+  {
+    fingerprintMissingAccessor(fp);
+    return;
+  }
+
+  fingerprintValue(fp, accessor->count);
+  fingerprintValue(fp, expectedType);
+  fingerprintValue(fp, componentCount);
+
+  if(!accessor->buffer_view || accessor->buffer_view->has_meshopt_compression)
+  {
+    fingerprintCompressedAccessorStorage(fp, accessor);
+    return;
+  }
+
+  for(size_t i = 0; i < accessor->count; i++)
+  {
+    std::array<float, 4> values = {};
+    cgltf_accessor_read_float(accessor, i, values.data(), componentCount);
+    for(size_t c = 0; c < componentCount; c++)
+    {
+      float value = accessor->type == expectedType ? values[c] : 0.0f;
+      if(dropBits)
+      {
+        value = quantizeFloat(value, dropBits);
+      }
+      fingerprintValue(fp, value);
+    }
+  }
+}
+
+GeometryFingerprint computeGeometryFingerprint(const cgltf_mesh& mesh, const lodclusters::SceneConfig& config)
+{
+  GeometryFingerprint fp;
+  fp.attributeBits = computeMeshAttributeBits(mesh, config);
+
+  uint32_t vertexOffset   = 0;
+  uint32_t primitiveCount = 0;
+
+  for(size_t primIdx = 0; primIdx < mesh.primitives_count; primIdx++)
+  {
+    const cgltf_primitive* primitive = &mesh.primitives[primIdx];
+    if(primitive->type != cgltf_primitive_type_triangles || primitive->attributes_count == 0)
+    {
+      continue;
+    }
+
+    const cgltf_accessor* positions = findAttributeAccessor(primitive, "POSITION");
+    const cgltf_accessor* normals   = findAttributeAccessor(primitive, "NORMAL");
+    const cgltf_accessor* tangents  = findAttributeAccessor(primitive, "TANGENT");
+    const cgltf_accessor* tex0      = findAttributeAccessor(primitive, "TEXCOORD_0");
+    const cgltf_accessor* tex1      = findAttributeAccessor(primitive, "TEXCOORD_1");
+    const cgltf_accessor* indices   = primitive->indices;
+
+    uint32_t primitiveVertexCount = positions ? uint32_t(positions->count) : 0;
+    uint32_t primitiveIndexCount  = indices ? uint32_t(indices->count) : 0;
+
+    fingerprintValue(fp, primitiveCount);
+    fingerprintValue(fp, primitiveVertexCount);
+    fingerprintValue(fp, primitiveIndexCount);
+
+    fp.vertexCount += primitiveVertexCount;
+    fp.triangleCount += primitiveIndexCount / 3;
+
+    fingerprintFloatAccessor(fp, positions, cgltf_type_vec3, 3, config.useCompressedData ? config.compressionPosDropBits : 0);
+    if(fp.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
+    {
+      fingerprintFloatAccessor(fp, normals, cgltf_type_vec3, 3, 0);
+    }
+    if(fp.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT)
+    {
+      fingerprintFloatAccessor(fp, tangents, cgltf_type_vec4, 4, 0);
+    }
+    if(fp.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
+    {
+      fingerprintFloatAccessor(fp, tex0, cgltf_type_vec2, 2, config.useCompressedData ? config.compressionTexDropBits : 0);
+    }
+    if(fp.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1)
+    {
+      fingerprintFloatAccessor(fp, tex1, cgltf_type_vec2, 2, config.useCompressedData ? config.compressionTexDropBits : 0);
+    }
+
+    if(!indices)
+    {
+      fingerprintMissingAccessor(fp);
+    }
+    else if(indices->buffer_view && indices->buffer_view->has_meshopt_compression)
+    {
+      fingerprintCompressedAccessorStorage(fp, indices);
+    }
+    else
+    {
+      fingerprintValue(fp, indices->count);
+      for(size_t i = 0; i < indices->count; i++)
+      {
+        uint32_t index = uint32_t(cgltf_accessor_read_index(indices, i)) + vertexOffset;
+        fingerprintValue(fp, index);
+      }
+    }
+
+    vertexOffset += primitiveVertexCount;
+    primitiveCount++;
+  }
+
+  fingerprintValue(fp, primitiveCount);
+  return fp;
+}
 }
 
 
@@ -321,18 +580,14 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   }
 
 
-  if(!m_cacheFileView.isValid())
+  cgltfResult = cgltf_load_buffers(&options, gltf.get(), fileName.c_str());
+  if(cgltfResult != cgltf_result_success)
   {
-
-    cgltfResult = cgltf_load_buffers(&options, gltf.get(), fileName.c_str());
-    if(cgltfResult != cgltf_result_success)
-    {
-      LOGE(
-          "loadGLTF: The glTF file was valid, but cgltf_load_buffers failed. Are the glTF file's referenced file paths "
-          "valid? (cgltf result: %d)\n",
-          cgltfResult);
-      return SCENE_RESULT_ERROR;
-    }
+    LOGE(
+        "loadGLTF: The glTF file was valid, but cgltf_load_buffers failed. Are the glTF file's referenced file paths "
+        "valid? (cgltf result: %d)\n",
+        cgltfResult);
+    return SCENE_RESULT_ERROR;
   }
 
 
@@ -351,15 +606,14 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   {
     size_t geometryMemoryEstimate = 0;
 
-    std::unordered_map<std::string, size_t> mapMeshToGeometry;
+    std::unordered_map<GeometryFingerprint, size_t, GeometryFingerprintHasher> mapMeshToGeometry;
 
     for(size_t meshIndex = 0; meshIndex < gltf->meshes_count; meshIndex++)
     {
       const cgltf_mesh gltfMesh = gltf->meshes[meshIndex];
 
-      size_t      meshMemoryEstimate = 0;
-      size_t      meshTriangleCount  = 0;
-      std::string meshIdentifier;
+      size_t meshMemoryEstimate = 0;
+      size_t meshTriangleCount  = 0;
 
       for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
       {
@@ -376,17 +630,6 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         }
 
 
-        // 结构：MeshAccessors。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。
-        // 设计意图：把同一抽象对象的计数、偏移、地址和配置集中存放，降低跨函数传递时的语义丢失。
-        // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
-        struct MeshAccessors
-        {
-          const void* pos    = nullptr;
-          const void* index  = nullptr;
-          const void* tex    = nullptr;
-          const void* normal = nullptr;
-        } meshAccessors;
-
         for(size_t attribIdx = 0; attribIdx < gltfPrim->attributes_count; attribIdx++)
         {
           const cgltf_attribute& gltfAttrib = gltfPrim->attributes[attribIdx];
@@ -394,32 +637,18 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
           if(strcmp(gltfAttrib.name, "POSITION") == 0)
           {
-            meshAccessors.pos = accessor;
             meshMemoryEstimate += sizeof(glm::vec4) * accessor->count;
-          }
-          else if(strcmp(gltfAttrib.name, "TEXCOORD_0") == 0)
-          {
-            meshAccessors.tex = accessor;
-          }
-          else if(strcmp(gltfAttrib.name, "NORMAL") == 0)
-          {
-            meshAccessors.normal = accessor;
           }
         }
 
-        meshAccessors.index = gltfPrim->indices;
         meshMemoryEstimate += sizeof(uint32_t) * gltfPrim->indices->count;
 
         meshTriangleCount += gltfPrim->indices->count / 3;
         totalTriangleCount += gltfPrim->indices->count / 3;
-
-
-        meshIdentifier +=
-            fmt::format("{},{},{},{},", meshAccessors.pos, meshAccessors.normal, meshAccessors.index, meshAccessors.tex);
       }
 
-
-      auto pair = mapMeshToGeometry.try_emplace(meshIdentifier, geometryToMesh.size());
+      GeometryFingerprint fingerprint = computeGeometryFingerprint(gltfMesh, m_config);
+      auto                pair        = mapMeshToGeometry.try_emplace(fingerprint, geometryToMesh.size());
       if(pair.second)
       {
 
@@ -842,6 +1071,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
   }
 
   std::unordered_set<cgltf_buffer_view*> compressedViews;
+  bool                                   loadedCompressedViews = false;
 
   const cgltf_mesh& gltfMesh = gltf->meshes[meshIndex];
   GeometryStorage&  geometry = m_geometryStorages[geometryIndex];
@@ -1024,6 +1254,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
         LOGW("Error decompressing GLTF\n");
         return;
       }
+      loadedCompressedViews = true;
     }
 
 
@@ -1129,7 +1360,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
 
   processGeometry(processingInfo, geometryIndex, isCached);
 
-  if(!compressedViews.empty())
+  if(loadedCompressedViews)
   {
 
     unloadCompressedViewsGLTF(processingInfo, compressedViews, gltf);

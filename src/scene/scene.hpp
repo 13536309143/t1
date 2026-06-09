@@ -718,7 +718,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;
-      uint32_t geoVersion          = 7;
+      uint32_t geoVersion          = 8;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
