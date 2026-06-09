@@ -37,7 +37,7 @@ namespace lodclusters {
 // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
 struct SceneConfig
 {
-  static const uint32_t version = 3;
+  static const uint32_t version = 2;
 
 
   uint32_t clusterVertices    = 128;
@@ -83,10 +83,7 @@ struct SceneConfig
   float lodErrorEdgeLimit = 0;
 
 
-  uint32_t assemblyCullingMinInstances = 8;
-
-
-  uint32_t reservedData[8] = {};
+  uint32_t reservedData[9] = {};
 
 
 };
@@ -523,16 +520,8 @@ public:
     shaderio::BBox bbox;
     uint32_t       geometryID = ~0U;
     uint32_t       materialID = ~0U;
-    uint32_t       assemblyID = SHADERIO_INVALID_ASSEMBLY;
     bool           twoSided   = false;
     glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
-  };
-
-  struct GltfNodeImportResult
-  {
-    uint32_t       firstInstance = 0;
-    uint32_t       instanceCount = 0;
-    shaderio::BBox bbox          = {};
   };
 
 
@@ -579,7 +568,6 @@ public:
   shaderio::BBox m_gridBbox;
 
   std::vector<Instance> m_instances;
-  std::vector<shaderio::AssemblyNode> m_assemblyNodes;
   std::vector<Camera>   m_cameras;
 
   bool m_isBig       = false;
@@ -730,7 +718,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;
-      uint32_t geoVersion          = 8;
+      uint32_t geoVersion          = 8;//文件版本号，增加不兼容字段时递增
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
@@ -956,13 +944,10 @@ private:
   // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
   // 设计要点：读取路径需要校验输入合法性，并把外部格式的不确定性转化为内部确定布局。
   void loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIndex, size_t meshIndex, const struct cgltf_data* gltf);
-  GltfNodeImportResult addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
-                                                const struct cgltf_data*   data,
-                                                const struct cgltf_node*   node,
-                                                const glm::mat4 parentObjToWorldTransform = glm::mat4(1),
-                                                uint32_t        depth                     = 0);
-
-  void assignAssemblyToRange(uint32_t assemblyID, uint32_t firstInstance, uint32_t instanceCount);
+  void addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
+                                const struct cgltf_data*   data,
+                                const struct cgltf_node*   node,
+                                const glm::mat4            parentObjToWorldTransform = glm::mat4(1));
 
 
   bool loadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,
