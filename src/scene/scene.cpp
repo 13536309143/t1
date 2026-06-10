@@ -209,6 +209,43 @@ void Scene::ProcessingInfo::logEnd()
 
     LOGI("\n");
   }
+
+  if(stats.featureInputVertices)
+  {
+    const uint64_t featureVertices = uint64_t(stats.featureInputVertices);
+    const auto pct = [featureVertices](uint64_t value) {
+      return featureVertices ? (100.0 * double(value) / double(featureVertices)) : 0.0;
+    };
+
+    LOGI("Feature Retention Stats\n");
+    LOGI("Input Feature Vertices: %12" PRIu64 "\n", featureVertices);
+    LOGI("Input Feature Tris:     %12" PRIu64 "\n", (uint64_t)stats.featureInputTriangles);
+    LOGI("Boundary Vertices:      %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureBoundaryVertices,
+         pct((uint64_t)stats.featureBoundaryVertices));
+    LOGI("Non-Manifold Vertices:  %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureNonManifoldVertices,
+         pct((uint64_t)stats.featureNonManifoldVertices));
+    LOGI("Sharp Edge Vertices:    %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureSharpVertices,
+         pct((uint64_t)stats.featureSharpVertices));
+    LOGI("Boundary Components:    %12" PRIu64 "\n", (uint64_t)stats.featureBoundaryLoopComponents);
+    LOGI("Sharp Ring Components:  %12" PRIu64 "\n", (uint64_t)stats.featureSharpRingComponents);
+    LOGI("Circular Hole Loops:    %12" PRIu64 "\n", (uint64_t)stats.featureCircularHoleLoops);
+    LOGI("Circular Hole Vertices: %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureCircularHoleVertices,
+         pct((uint64_t)stats.featureCircularHoleVertices));
+    LOGI("Functional Boundaries:  %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureFunctionalBoundaryVertices,
+         pct((uint64_t)stats.featureFunctionalBoundaryVertices));
+    LOGI("Cylindrical Vertices:   %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureCylindricalPatchVertices,
+         pct((uint64_t)stats.featureCylindricalPatchVertices));
+    LOGI("Thin-Wall Vertices:     %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureThinWallVertices,
+         pct((uint64_t)stats.featureThinWallVertices));
+    LOGI("Protected Vertices:     %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureProtectedVertices,
+         pct((uint64_t)stats.featureProtectedVertices));
+    LOGI("Critical Vertices:      %12" PRIu64 " (%6.2f%%)\n", (uint64_t)stats.featureCriticalVertices,
+         pct((uint64_t)stats.featureCriticalVertices));
+    LOGI("Avg Feature Importance: %12.4f\n",
+         double((uint64_t)stats.featureImportanceSumPpm) / double(featureVertices) / 1000000.0);
+    LOGI("Max Feature Importance: %12.4f\n", double((uint64_t)stats.featureImportanceMaxPpm) / 1000000.0);
+    LOGI("\n");
+  }
 }
 
 
@@ -319,6 +356,37 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
 
   processingInfo.deinit();
 
+  m_processingStats.groups                = uint64_t(processingInfo.stats.groups);
+  m_processingStats.clusters              = uint64_t(processingInfo.stats.clusters);
+  m_processingStats.vertices              = uint64_t(processingInfo.stats.vertices);
+  m_processingStats.groupUniqueVertices   = uint64_t(processingInfo.stats.groupUniqueVertices);
+  m_processingStats.groupHeaderBytes      = uint64_t(processingInfo.stats.groupHeaderBytes);
+  m_processingStats.triangleIndexBytes    = uint64_t(processingInfo.stats.triangleIndexBytes);
+  m_processingStats.vertexPosBytes        = uint64_t(processingInfo.stats.vertexPosBytes);
+  m_processingStats.vertexTexCoordBytes   = uint64_t(processingInfo.stats.vertexTexCoordBytes);
+  m_processingStats.vertexNrmBytes        = uint64_t(processingInfo.stats.vertexNrmBytes);
+  m_processingStats.vertexCompressedBytes = uint64_t(processingInfo.stats.vertexCompressedBytes);
+  m_processingStats.clusterBboxBytes      = uint64_t(processingInfo.stats.clusterBboxBytes);
+  m_processingStats.clusterHeaderBytes    = uint64_t(processingInfo.stats.clusterHeaderBytes);
+  m_processingStats.clusterGenBytes       = uint64_t(processingInfo.stats.clusterGenBytes);
+
+  m_processingStats.featureInputVertices              = uint64_t(processingInfo.stats.featureInputVertices);
+  m_processingStats.featureInputTriangles             = uint64_t(processingInfo.stats.featureInputTriangles);
+  m_processingStats.featureBoundaryVertices           = uint64_t(processingInfo.stats.featureBoundaryVertices);
+  m_processingStats.featureNonManifoldVertices        = uint64_t(processingInfo.stats.featureNonManifoldVertices);
+  m_processingStats.featureSharpVertices              = uint64_t(processingInfo.stats.featureSharpVertices);
+  m_processingStats.featureBoundaryLoopComponents     = uint64_t(processingInfo.stats.featureBoundaryLoopComponents);
+  m_processingStats.featureSharpRingComponents        = uint64_t(processingInfo.stats.featureSharpRingComponents);
+  m_processingStats.featureCircularHoleLoops          = uint64_t(processingInfo.stats.featureCircularHoleLoops);
+  m_processingStats.featureCircularHoleVertices       = uint64_t(processingInfo.stats.featureCircularHoleVertices);
+  m_processingStats.featureFunctionalBoundaryVertices = uint64_t(processingInfo.stats.featureFunctionalBoundaryVertices);
+  m_processingStats.featureCylindricalPatchVertices   = uint64_t(processingInfo.stats.featureCylindricalPatchVertices);
+  m_processingStats.featureThinWallVertices           = uint64_t(processingInfo.stats.featureThinWallVertices);
+  m_processingStats.featureProtectedVertices          = uint64_t(processingInfo.stats.featureProtectedVertices);
+  m_processingStats.featureCriticalVertices           = uint64_t(processingInfo.stats.featureCriticalVertices);
+  m_processingStats.featureImportanceSumPpm           = uint64_t(processingInfo.stats.featureImportanceSumPpm);
+  m_processingStats.featureImportanceMaxPpm           = uint64_t(processingInfo.stats.featureImportanceMaxPpm);
+
   if(loadResult != SCENE_RESULT_SUCCESS)
   {
 
@@ -337,6 +405,7 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
     m_config.assemblyLodPixelThreshold   = assemblyLodPixelThreshold;
 
     m_cacheFileView.getHistograms(m_histograms);
+    m_cacheFileView.getProcessingStats(m_processingStats);
   }
 
 

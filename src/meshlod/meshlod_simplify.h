@@ -30,6 +30,13 @@ struct FeatureEdge
 	float length;
 };
 
+struct BoundarySegment
+{
+	unsigned int v0;
+	unsigned int v1;
+	float length;
+};
+
 
 // 函数：clamp01。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
 // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
@@ -84,6 +91,151 @@ static float length3(const float* v)
 	return sqrtf(dot3(v, v));
 }
 
+static void detectFunctionalBoundaryLoops(const clodMesh& mesh, size_t stride, const std::vector<float>& mean_normals, const std::vector<BoundarySegment>& boundary_segments, float model_scale, std::vector<unsigned int>& boundary_degree, std::vector<float>& circular_hole, std::vector<float>& functional_boundary, uint64_t* component_count = nullptr, uint64_t* circular_loop_count = nullptr)
+{
+	if (boundary_segments.empty() || mesh.vertex_count == 0)
+		return;
+
+	std::vector<unsigned int> degree(mesh.vertex_count, 0);
+	for (const BoundarySegment& segment : boundary_segments)
+	{
+		if (segment.v0 < mesh.vertex_count && segment.v1 < mesh.vertex_count)
+		{
+			degree[segment.v0]++;
+			degree[segment.v1]++;
+		}
+	}
+
+	std::vector<unsigned int> offsets(mesh.vertex_count + 1, 0);
+	for (size_t v = 0; v < mesh.vertex_count; ++v)
+		offsets[v + 1] = offsets[v] + degree[v];
+
+	std::vector<unsigned int> cursor(offsets);
+	std::vector<unsigned int> adjacency(offsets.back());
+	for (const BoundarySegment& segment : boundary_segments)
+	{
+		if (segment.v0 < mesh.vertex_count && segment.v1 < mesh.vertex_count)
+		{
+			adjacency[cursor[segment.v0]++] = segment.v1;
+			adjacency[cursor[segment.v1]++] = segment.v0;
+		}
+	}
+
+	std::vector<unsigned char> visited(mesh.vertex_count, 0);
+	std::vector<unsigned int> component;
+	std::vector<unsigned int> queue;
+	component.reserve(64);
+	queue.reserve(64);
+
+	for (const BoundarySegment& seed_segment : boundary_segments)
+	{
+		unsigned int seeds[2] = {seed_segment.v0, seed_segment.v1};
+		for (unsigned int seed : seeds)
+		{
+			if (seed >= mesh.vertex_count || visited[seed])
+				continue;
+
+			component.clear();
+			queue.clear();
+			visited[seed] = 1;
+			queue.push_back(seed);
+
+			for (size_t head = 0; head < queue.size(); ++head)
+			{
+				unsigned int v = queue[head];
+				component.push_back(v);
+
+				for (unsigned int e = offsets[v]; e < offsets[v + 1]; ++e)
+				{
+					unsigned int next = adjacency[e];
+					if (next < mesh.vertex_count && !visited[next])
+					{
+						visited[next] = 1;
+						queue.push_back(next);
+					}
+				}
+			}
+
+			if (component.size() < 3)
+				continue;
+
+			if (component_count)
+				(*component_count)++;
+
+			float center[3] = {};
+			float normal[3] = {};
+			unsigned int degree2 = 0;
+			for (unsigned int v : component)
+			{
+				const float* p = &mesh.vertex_positions[v * stride];
+				center[0] += p[0];
+				center[1] += p[1];
+				center[2] += p[2];
+
+				normal[0] += mean_normals[v * 3 + 0];
+				normal[1] += mean_normals[v * 3 + 1];
+				normal[2] += mean_normals[v * 3 + 2];
+
+				if (degree[v] == 2)
+					degree2++;
+			}
+
+			float inv_count = 1.f / float(component.size());
+			center[0] *= inv_count;
+			center[1] *= inv_count;
+			center[2] *= inv_count;
+			float normal_len = normalize3(normal);
+
+			float mean_radius = 0.f;
+			float mean_plane_deviation = 0.f;
+			for (unsigned int v : component)
+			{
+				const float* p = &mesh.vertex_positions[v * stride];
+				float d[3] = {p[0] - center[0], p[1] - center[1], p[2] - center[2]};
+				mean_radius += length3(d);
+				if (normal_len > 1e-8f)
+					mean_plane_deviation += fabsf(dot3(d, normal));
+			}
+			mean_radius *= inv_count;
+			mean_plane_deviation *= inv_count;
+
+			float radius_variance = 0.f;
+			for (unsigned int v : component)
+			{
+				const float* p = &mesh.vertex_positions[v * stride];
+				float d[3] = {p[0] - center[0], p[1] - center[1], p[2] - center[2]};
+				float radius = length3(d);
+				float delta = radius - mean_radius;
+				radius_variance += delta * delta;
+			}
+			radius_variance *= inv_count;
+
+			float relative_radius_sigma = mean_radius > 1e-8f ? sqrtf(radius_variance) / mean_radius : 1.f;
+			float relative_planarity = mean_radius > 1e-8f ? mean_plane_deviation / mean_radius : 1.f;
+			float degree2_ratio = float(degree2) * inv_count;
+			float size_score = clamp01((float(component.size()) - 5.f) / 12.f);
+			float roundness_score = clamp01((0.28f - relative_radius_sigma) / 0.28f);
+			float planarity_score = normal_len > 1e-8f ? clamp01((0.16f - relative_planarity) / 0.16f) : 0.5f;
+			float loop_score = size_score * roundness_score * planarity_score * clamp01((degree2_ratio - 0.5f) / 0.5f);
+			float boundary_score = clamp01(0.35f + degree2_ratio * 0.35f);
+
+			if (mean_radius > model_scale * 0.35f)
+				loop_score *= 0.65f;
+
+			if (loop_score > 0.1f && circular_loop_count)
+				(*circular_loop_count)++;
+
+			for (unsigned int v : component)
+			{
+				functional_boundary[v] = std::max(functional_boundary[v], boundary_score);
+				boundary_degree[v] = std::max(boundary_degree[v], degree[v]);
+				if (loop_score > 0.1f)
+					circular_hole[v] = std::max(circular_hole[v], clamp01(0.45f + loop_score * 0.55f));
+			}
+		}
+	}
+}
+
 
 // 函数：computeFeatureImportance。计算派生值，供后续剔除、LOD、统计或资源规划使用。
 // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
@@ -128,6 +280,11 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 	// 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
 	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<float> thin_wall(mesh.vertex_count, 0.f);
+	std::vector<float> circular_hole(mesh.vertex_count, 0.f);
+	std::vector<float> cylindrical_patch(mesh.vertex_count, 0.f);
+	std::vector<float> functional_boundary(mesh.vertex_count, 0.f);
+	std::vector<float> curved_edge_sum(mesh.vertex_count, 0.f);
+	std::vector<unsigned int> curved_edge_count(mesh.vertex_count, 0);
 
 
 	// 函数：boundary。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
@@ -171,8 +328,16 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 	// 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
 	std::vector<unsigned int> local_edge_count(mesh.vertex_count, 0);
 	std::vector<FeatureEdge> edges;
+	std::vector<BoundarySegment> boundary_segments;
+	std::vector<BoundarySegment> sharp_loop_segments;
+	uint64_t boundary_loop_components = 0;
+	uint64_t sharp_ring_components = 0;
+	uint64_t circular_boundary_loops = 0;
+	uint64_t circular_sharp_rings = 0;
 
 	edges.reserve(mesh.index_count);
+	boundary_segments.reserve(mesh.index_count / 6);
+	sharp_loop_segments.reserve(mesh.index_count / 8);
 
 	float bbox_min[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
 	float bbox_max[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -303,6 +468,7 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 			boundary[edges[begin].v1] = 1.f;
 			boundary_degree[edges[begin].v0]++;
 			boundary_degree[edges[begin].v1]++;
+			boundary_segments.push_back({edges[begin].v0, edges[begin].v1, edges[begin].length});
 		}
 		else if (end - begin > 2)
 		{
@@ -319,7 +485,28 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 			const float* n1 = &face_normals[edges[begin + 1].face * 3];
 			float d = std::min(1.f, std::max(-1.f, dot3(n0, n1)));
 			if (d < cos_threshold)
+			{
 				edge_score = clamp01((cos_threshold - d) / std::max(cos_threshold + 1.f, 1e-5f));
+				if (edge_score > 0.18f)
+				{
+					for (size_t i = begin; i < end; ++i)
+						sharp_loop_segments.push_back({edges[i].v0, edges[i].v1, edges[i].length});
+				}
+			}
+			else
+			{
+				float curved_score = clamp01((1.f - d) / 0.08f);
+				if (curved_score > 0.02f)
+				{
+					for (size_t i = begin; i < end; ++i)
+					{
+						curved_edge_sum[edges[i].v0] += curved_score;
+						curved_edge_sum[edges[i].v1] += curved_score;
+						curved_edge_count[edges[i].v0]++;
+						curved_edge_count[edges[i].v1]++;
+					}
+				}
+			}
 		}
 
 		if (edge_score > 0.f)
@@ -335,6 +522,9 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 
 		begin = end;
 	}
+
+	detectFunctionalBoundaryLoops(mesh, stride, mean_normals, boundary_segments, model_scale, boundary_degree, circular_hole, functional_boundary, &boundary_loop_components, &circular_boundary_loops);
+	detectFunctionalBoundaryLoops(mesh, stride, mean_normals, sharp_loop_segments, model_scale, boundary_degree, circular_hole, functional_boundary, &sharp_ring_components, &circular_sharp_rings);
 
 	for (size_t f = 0; f < face_count; ++f)
 	{
@@ -356,22 +546,38 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 	{
 		float avg_edge = local_edge_count[v] ? local_edge_sum[v] / float(local_edge_count[v]) : 0.f;
 		float min_edge = local_min_edge[v] < FLT_MAX ? local_min_edge[v] : avg_edge;
+		float max_edge = local_max_edge[v];
 		float slender_score = (avg_edge > 0.f && min_edge > 0.f) ? clamp01((avg_edge / min_edge - 2.f) / 6.f) : 0.f;
+		float anisotropy_score = (max_edge > 0.f && min_edge > 0.f) ? clamp01((max_edge / min_edge - 3.f) / 10.f) : 0.f;
 		float small_scale_score = avg_edge > 0.f ? clamp01((model_scale * 0.015f - avg_edge) / (model_scale * 0.015f)) : 0.f;
-		float hole_loop_score = boundary_degree[v] >= 2 ? 1.f : boundary[v];
+		float hole_loop_score = std::max(circular_hole[v], boundary_degree[v] >= 2 ? 0.65f : boundary[v]);
+		float curved_score = curved_edge_count[v] ? clamp01(curved_edge_sum[v] / float(curved_edge_count[v]) * 1.4f) : 0.f;
+		float cylinder_score = clamp01(curved_score * 0.55f + normal_variation[v] * 0.65f);
+		cylinder_score *= 1.f - boundary[v] * 0.35f;
+		cylindrical_patch[v] = std::max(cylindrical_patch[v], cylinder_score);
 
 
-		thin_wall[v] = std::max(thin_wall[v], slender_score * 0.7f + small_scale_score * 0.3f);
+		thin_wall[v] = std::max(thin_wall[v], slender_score * 0.45f + anisotropy_score * 0.25f + small_scale_score * 0.2f + functional_boundary[v] * 0.1f);
 
 		float weighted =
-			boundary[v] * 0.28f +
-			hole_loop_score * 0.18f +
-			non_manifold[v] * 0.22f +
-			importance[v] * 0.22f +
-			normal_variation[v] * 0.18f +
-			thin_wall[v] * 0.14f;
+			boundary[v] * 0.18f +
+			functional_boundary[v] * 0.18f +
+			hole_loop_score * 0.24f +
+			cylindrical_patch[v] * 0.18f +
+			non_manifold[v] * 0.20f +
+			importance[v] * 0.18f +
+			normal_variation[v] * 0.12f +
+			thin_wall[v] * 0.18f;
 
 		importance[v] = std::max(importance[v], clamp01(weighted));
+
+		if (circular_hole[v] > 0.35f)
+			importance[v] = std::max(importance[v], clamp01(0.88f + circular_hole[v] * 0.12f));
+		else if (functional_boundary[v] > 0.55f)
+			importance[v] = std::max(importance[v], clamp01(0.68f + functional_boundary[v] * 0.18f));
+
+		if (cylindrical_patch[v] > 0.55f)
+			importance[v] = std::max(importance[v], clamp01(0.58f + cylindrical_patch[v] * 0.22f));
 	}
 
 
@@ -385,7 +591,9 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 		float line_strength = std::max(importance[edges[i].v0], importance[edges[i].v1]);
 		if (line_strength > 0.45f)
 		{
-			float attenuated = line_strength * 0.55f;
+			float semantic_strength = std::max(circular_hole[edges[i].v0], circular_hole[edges[i].v1]);
+			semantic_strength = std::max(semantic_strength, std::max(cylindrical_patch[edges[i].v0], cylindrical_patch[edges[i].v1]));
+			float attenuated = line_strength * (semantic_strength > 0.55f ? 0.72f : 0.55f);
 
 			propagated[edges[i].v0] = std::max(propagated[edges[i].v0], attenuated);
 
@@ -436,6 +644,57 @@ std::vector<float> computeFeatureImportance(const clodConfig& config, const clod
 			importance[v] = std::max(importance[v], representative[remap[v]]);
 	}
 
+	if (mesh.feature_metrics)
+	{
+		clodFeatureMetrics metrics = {};
+		metrics.input_vertices = mesh.vertex_count;
+		metrics.input_triangles = mesh.index_count / 3;
+		metrics.boundary_loop_components = boundary_loop_components;
+		metrics.sharp_ring_components = sharp_ring_components;
+		metrics.circular_hole_loops = circular_boundary_loops + circular_sharp_rings;
+
+		for (size_t v = 0; v < mesh.vertex_count; ++v)
+		{
+			const float feature = clamp01(importance[v]);
+			const uint64_t feature_ppm = uint64_t(feature * 1000000.f + 0.5f);
+			metrics.feature_importance_sum_ppm += feature_ppm;
+			metrics.feature_importance_max_ppm = std::max(metrics.feature_importance_max_ppm, feature_ppm);
+
+			if (boundary[v] > 0.5f)
+				metrics.boundary_vertices++;
+			if (non_manifold[v] > 0.5f)
+				metrics.non_manifold_vertices++;
+			if (circular_hole[v] > 0.35f)
+				metrics.circular_hole_vertices++;
+			if (functional_boundary[v] > 0.55f)
+				metrics.functional_boundary_vertices++;
+			if (cylindrical_patch[v] > 0.55f)
+				metrics.cylindrical_patch_vertices++;
+			if (thin_wall[v] > 0.5f)
+				metrics.thin_wall_vertices++;
+			if (feature >= 0.78f)
+				metrics.protected_feature_vertices++;
+			if (feature >= 0.92f)
+				metrics.critical_feature_vertices++;
+		}
+
+		std::vector<unsigned char> sharp_seen(mesh.vertex_count, 0);
+		for (const BoundarySegment& segment : sharp_loop_segments)
+		{
+			if (segment.v0 < mesh.vertex_count)
+				sharp_seen[segment.v0] = 1;
+			if (segment.v1 < mesh.vertex_count)
+				sharp_seen[segment.v1] = 1;
+		}
+		for (size_t v = 0; v < mesh.vertex_count; ++v)
+		{
+			if (sharp_seen[v])
+				metrics.sharp_feature_vertices++;
+		}
+
+		*mesh.feature_metrics = metrics;
+	}
+
 	return importance;
 }
 
@@ -480,15 +739,40 @@ static size_t featureAdaptiveTarget(const clodConfig& config, const std::vector<
 {
 	float avg_feature = 0.f;
 	float max_feature = 0.f;
+	float critical_count = 0.f;
+	float protected_count = 0.f;
 
 	featureStats(indices, feature_importance, avg_feature, max_feature);
 
+	if (!feature_importance.empty())
+	{
+		for (size_t i = 0; i < indices.size(); ++i)
+		{
+			unsigned int v = indices[i];
+			if (v < feature_importance.size())
+			{
+				if (feature_importance[v] >= 0.92f)
+					critical_count += 1.f;
+				else if (feature_importance[v] >= 0.78f)
+					protected_count += 1.f;
+			}
+		}
+	}
 
-	float pressure = clamp01(avg_feature * 0.7f + max_feature * 0.3f);
+	float critical_ratio = indices.empty() ? 0.f : critical_count / float(indices.size());
+	float protected_ratio = indices.empty() ? 0.f : protected_count / float(indices.size());
+
+
+	float pressure = clamp01(avg_feature * 0.45f + max_feature * 0.25f + critical_ratio * 0.22f + protected_ratio * 0.08f);
 
 	float strength = clamp01(config.curvature_adaptive_strength + config.silhouette_preservation);
 	float preserve = 1.f - config.simplify_ratio;
 	size_t relaxed = target_count + size_t(float(indices.size() - target_count) * preserve * strength * pressure);
+	if (critical_count > 0.f)
+	{
+		size_t critical_floor = target_count + size_t(float(indices.size() - target_count) * clamp01(0.35f + strength * (0.25f + critical_ratio)));
+		relaxed = std::max(relaxed, critical_floor);
+	}
 	relaxed = (relaxed / 3) * 3;
 
 	return std::max(target_count, std::min(indices.size(), relaxed));
@@ -504,7 +788,7 @@ static void applyFeatureLocks(const clodConfig& config, const std::vector<unsign
 		return;
 
 
-	float lock_threshold = 1.f - 0.2f * clamp01(config.silhouette_preservation);
+	float lock_threshold = 0.9f - 0.25f * clamp01(config.silhouette_preservation);
 	for (size_t i = 0; i < indices.size(); ++i)
 	{
 		unsigned int v = indices[i];

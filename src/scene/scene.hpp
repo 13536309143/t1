@@ -38,7 +38,7 @@ namespace lodclusters {
 // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
 struct SceneConfig
 {
-  static const uint32_t version = 3;
+  static const uint32_t version = 5;
 
 
   uint32_t clusterVertices    = 128;
@@ -579,6 +579,42 @@ public:
     uint32_t lodLevelsMax        = {};
   };
 
+  struct ProcessingStatsSnapshot
+  {
+    static const uint32_t version = 1;
+
+    uint64_t groups                = 0;
+    uint64_t clusters              = 0;
+    uint64_t vertices              = 0;
+    uint64_t groupUniqueVertices   = 0;
+    uint64_t groupHeaderBytes      = 0;
+    uint64_t triangleIndexBytes    = 0;
+    uint64_t vertexPosBytes        = 0;
+    uint64_t vertexTexCoordBytes   = 0;
+    uint64_t vertexNrmBytes        = 0;
+    uint64_t vertexCompressedBytes = 0;
+    uint64_t clusterBboxBytes      = 0;
+    uint64_t clusterHeaderBytes    = 0;
+    uint64_t clusterGenBytes       = 0;
+
+    uint64_t featureInputVertices              = 0;
+    uint64_t featureInputTriangles             = 0;
+    uint64_t featureBoundaryVertices           = 0;
+    uint64_t featureNonManifoldVertices        = 0;
+    uint64_t featureSharpVertices              = 0;
+    uint64_t featureBoundaryLoopComponents     = 0;
+    uint64_t featureSharpRingComponents        = 0;
+    uint64_t featureCircularHoleLoops          = 0;
+    uint64_t featureCircularHoleVertices       = 0;
+    uint64_t featureFunctionalBoundaryVertices = 0;
+    uint64_t featureCylindricalPatchVertices   = 0;
+    uint64_t featureThinWallVertices           = 0;
+    uint64_t featureProtectedVertices          = 0;
+    uint64_t featureCriticalVertices           = 0;
+    uint64_t featureImportanceSumPpm           = 0;
+    uint64_t featureImportanceMaxPpm           = 0;
+  };
+
 
   SceneConfig       m_config;
   SceneLoaderConfig m_loaderConfig;
@@ -615,6 +651,7 @@ public:
   uint64_t m_totalVerticesCount        = 0;
 
   Histograms m_histograms;
+  ProcessingStatsSnapshot m_processingStats;
 
   bool m_loadedFromCache    = false;
   bool m_hasVertexNormals   = false;
@@ -742,12 +779,14 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;
-      uint32_t geoVersion          = 8;
+      uint32_t geoVersion          = 9;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
       uint32_t histogramsVersion   = Histograms::version;
       uint32_t histogramStructSize = uint32_t(sizeof(Histograms));
+      uint32_t processingStatsVersion = ProcessingStatsSnapshot::version;
+      uint32_t processingStatsStructSize = uint32_t(sizeof(ProcessingStatsSnapshot));
       uint64_t alignment           = serialization::ALIGNMENT;
 
 
@@ -756,9 +795,10 @@ private:
     Header header;
 
   public:
-    SceneConfig config;
-    Histograms  histograms;
-    uint32_t    pad[7];
+    SceneConfig             config;
+    Histograms              histograms;
+    ProcessingStatsSnapshot processingStats;
+    uint32_t                pad[7];
   };
 
   static_assert(sizeof(CacheFileHeader) % serialization::ALIGNMENT == 0, "CacheFileHeader size unaligned");
@@ -814,6 +854,8 @@ private:
     // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
     // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
     void getHistograms(Histograms& histograms) const;
+
+    void getProcessingStats(ProcessingStatsSnapshot& stats) const;
 
 
     // 函数：getGeometryView。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
@@ -905,6 +947,22 @@ private:
       std::atomic_uint64_t clusterBboxBytes      = 0;
       std::atomic_uint64_t clusterHeaderBytes    = 0;
       std::atomic_uint64_t clusterGenBytes       = 0;
+      std::atomic_uint64_t featureInputVertices          = 0;
+      std::atomic_uint64_t featureInputTriangles         = 0;
+      std::atomic_uint64_t featureBoundaryVertices       = 0;
+      std::atomic_uint64_t featureNonManifoldVertices    = 0;
+      std::atomic_uint64_t featureSharpVertices          = 0;
+      std::atomic_uint64_t featureBoundaryLoopComponents = 0;
+      std::atomic_uint64_t featureSharpRingComponents    = 0;
+      std::atomic_uint64_t featureCircularHoleLoops      = 0;
+      std::atomic_uint64_t featureCircularHoleVertices   = 0;
+      std::atomic_uint64_t featureFunctionalBoundaryVertices = 0;
+      std::atomic_uint64_t featureCylindricalPatchVertices   = 0;
+      std::atomic_uint64_t featureThinWallVertices           = 0;
+      std::atomic_uint64_t featureProtectedVertices          = 0;
+      std::atomic_uint64_t featureCriticalVertices           = 0;
+      std::atomic_uint64_t featureImportanceSumPpm           = 0;
+      std::atomic_uint64_t featureImportanceMaxPpm           = 0;
     } stats;
 
 
@@ -1042,7 +1100,7 @@ private:
   // 函数：endProcessingOnly。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
   // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
   // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
-  bool endProcessingOnly(bool hadError);
+  bool endProcessingOnly(ProcessingInfo& processingInfo, bool hadError);
 
 
   // 结构：TempContext。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。

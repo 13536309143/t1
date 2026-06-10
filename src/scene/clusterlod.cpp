@@ -545,12 +545,14 @@ namespace lodclusters {
 
 
      clodMesh inputMesh                = {};
+     clodFeatureMetrics featureMetrics = {};
      inputMesh.vertex_positions        = reinterpret_cast<const float*>(geometry.vertexPositions.data());
 
      inputMesh.vertex_count            = geometry.vertexPositions.size();
      inputMesh.vertex_positions_stride = sizeof(glm::vec3);
      inputMesh.index_count             = geometry.triangles.size() * 3;
      inputMesh.indices                 = reinterpret_cast<const uint32_t*>(geometry.triangles.data());
+     inputMesh.feature_metrics         = &featureMetrics;
      float attributeWeights[9] = {};
 
      if(geometry.attributesWithWeights)
@@ -632,6 +634,30 @@ namespace lodclusters {
 
 
      clodBuild(clodInfo, inputMesh, &context, clodGroupMeshoptimizer, nullptr);
+
+     auto atomicMax = [](std::atomic_uint64_t& value, uint64_t candidate) {
+       uint64_t current = value.load(std::memory_order_relaxed);
+       while(current < candidate && !value.compare_exchange_weak(current, candidate, std::memory_order_relaxed))
+       {
+       }
+     };
+
+     processingInfo.stats.featureInputVertices.fetch_add(featureMetrics.input_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureInputTriangles.fetch_add(featureMetrics.input_triangles, std::memory_order_relaxed);
+     processingInfo.stats.featureBoundaryVertices.fetch_add(featureMetrics.boundary_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureNonManifoldVertices.fetch_add(featureMetrics.non_manifold_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureSharpVertices.fetch_add(featureMetrics.sharp_feature_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureBoundaryLoopComponents.fetch_add(featureMetrics.boundary_loop_components, std::memory_order_relaxed);
+     processingInfo.stats.featureSharpRingComponents.fetch_add(featureMetrics.sharp_ring_components, std::memory_order_relaxed);
+     processingInfo.stats.featureCircularHoleLoops.fetch_add(featureMetrics.circular_hole_loops, std::memory_order_relaxed);
+     processingInfo.stats.featureCircularHoleVertices.fetch_add(featureMetrics.circular_hole_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureFunctionalBoundaryVertices.fetch_add(featureMetrics.functional_boundary_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureCylindricalPatchVertices.fetch_add(featureMetrics.cylindrical_patch_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureThinWallVertices.fetch_add(featureMetrics.thin_wall_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureProtectedVertices.fetch_add(featureMetrics.protected_feature_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureCriticalVertices.fetch_add(featureMetrics.critical_feature_vertices, std::memory_order_relaxed);
+     processingInfo.stats.featureImportanceSumPpm.fetch_add(featureMetrics.feature_importance_sum_ppm, std::memory_order_relaxed);
+     atomicMax(processingInfo.stats.featureImportanceMaxPpm, featureMetrics.feature_importance_max_ppm);
 
      geometry.triangles        = {};
      geometry.vertexPositions  = {};

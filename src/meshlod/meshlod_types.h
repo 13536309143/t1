@@ -12,6 +12,7 @@
 // 依赖说明：引入本编译单元需要的外部库、项目模块和共享着色器布局。
 // 依赖顺序通常反映抽象层次：先外部库，再项目模块，最后与 GPU 共享的接口定义。
 #include <stddef.h>
+#include <stdint.h>
 
 
 // 结构：clodConfig。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。
@@ -47,6 +48,26 @@ struct clodConfig
 	float silhouette_preservation;
 };
 
+struct clodFeatureMetrics
+{
+	uint64_t input_vertices;
+	uint64_t input_triangles;
+	uint64_t boundary_vertices;
+	uint64_t non_manifold_vertices;
+	uint64_t sharp_feature_vertices;
+	uint64_t boundary_loop_components;
+	uint64_t sharp_ring_components;
+	uint64_t circular_hole_loops;
+	uint64_t circular_hole_vertices;
+	uint64_t functional_boundary_vertices;
+	uint64_t cylindrical_patch_vertices;
+	uint64_t thin_wall_vertices;
+	uint64_t protected_feature_vertices;
+	uint64_t critical_feature_vertices;
+	uint64_t feature_importance_sum_ppm;
+	uint64_t feature_importance_max_ppm;
+};
+
 
 // 结构：clodMesh。组织一组语义相关的数据字段，供 CPU/GPU 流程或模块内部逻辑共享。
 // 设计意图：把同一抽象对象的计数、偏移、地址和配置集中存放，降低跨函数传递时的语义丢失。
@@ -64,6 +85,7 @@ struct clodMesh
 	const float* attribute_weights;
 	size_t attribute_count;
 	unsigned int attribute_protect_mask;
+	clodFeatureMetrics* feature_metrics;
 };
 
 

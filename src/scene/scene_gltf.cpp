@@ -838,7 +838,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     computeHistogramMaxs();
   }
 
-  if(endProcessingOnly(notCompleted))
+  if(endProcessingOnly(processingInfo, notCompleted))
   {
     return notCompleted ? SCENE_RESULT_ERROR : SCENE_RESULT_PREPROCESS_COMPLETED;
   }

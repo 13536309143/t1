@@ -243,6 +243,13 @@ void Scene::CacheFileView::getHistograms(Histograms& histograms) const
   histograms = cacheHeader->histograms;
 }
 
+void Scene::CacheFileView::getProcessingStats(ProcessingStatsSnapshot& stats) const
+{
+  const CacheFileHeader* cacheHeader = (const CacheFileHeader*)(m_dataBytes);
+
+  stats = cacheHeader->processingStats;
+}
+
 
 // 函数：Scene::CacheFileView::getGeometryView。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
 // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
@@ -424,8 +431,9 @@ bool Scene::saveCache() const
 
   uint8_t* mappingData = static_cast<uint8_t*>(outMapping.data());
   Scene::CacheFileHeader cacheHeader;
-  cacheHeader.config     = m_config;
-  cacheHeader.histograms = m_histograms;
+  cacheHeader.config          = m_config;
+  cacheHeader.histograms      = m_histograms;
+  cacheHeader.processingStats = m_processingStats;
   memcpy(mappingData, &cacheHeader, sizeof(cacheHeader));
   memcpy(mappingData + tableOffset, geometryOffsets.data(), sizeof(uint64_t) * geometryOffsets.size());
 
@@ -534,8 +542,9 @@ void Scene::beginProcessingOnly(size_t geometryCount)
   if(!partialExists)
   {
     Scene::CacheFileHeader header;
-    header.config     = m_config;
-    header.histograms = m_histograms;
+    header.config          = m_config;
+    header.histograms      = m_histograms;
+    header.processingStats = m_processingStats;
 
     fwrite(&header, sizeof(header), 1, m_processingOnlyFile);
   }
@@ -605,10 +614,41 @@ void Scene::saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIn
 // 函数：Scene::endProcessingOnly。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
 // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
 // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
-bool Scene::endProcessingOnly(bool hadError)
+bool Scene::endProcessingOnly(ProcessingInfo& processingInfo, bool hadError)
 {
   if(!m_processingOnlyFile)
     return false;
+
+  m_processingStats.groups                = uint64_t(processingInfo.stats.groups);
+  m_processingStats.clusters              = uint64_t(processingInfo.stats.clusters);
+  m_processingStats.vertices              = uint64_t(processingInfo.stats.vertices);
+  m_processingStats.groupUniqueVertices   = uint64_t(processingInfo.stats.groupUniqueVertices);
+  m_processingStats.groupHeaderBytes      = uint64_t(processingInfo.stats.groupHeaderBytes);
+  m_processingStats.triangleIndexBytes    = uint64_t(processingInfo.stats.triangleIndexBytes);
+  m_processingStats.vertexPosBytes        = uint64_t(processingInfo.stats.vertexPosBytes);
+  m_processingStats.vertexTexCoordBytes   = uint64_t(processingInfo.stats.vertexTexCoordBytes);
+  m_processingStats.vertexNrmBytes        = uint64_t(processingInfo.stats.vertexNrmBytes);
+  m_processingStats.vertexCompressedBytes = uint64_t(processingInfo.stats.vertexCompressedBytes);
+  m_processingStats.clusterBboxBytes      = uint64_t(processingInfo.stats.clusterBboxBytes);
+  m_processingStats.clusterHeaderBytes    = uint64_t(processingInfo.stats.clusterHeaderBytes);
+  m_processingStats.clusterGenBytes       = uint64_t(processingInfo.stats.clusterGenBytes);
+
+  m_processingStats.featureInputVertices              = uint64_t(processingInfo.stats.featureInputVertices);
+  m_processingStats.featureInputTriangles             = uint64_t(processingInfo.stats.featureInputTriangles);
+  m_processingStats.featureBoundaryVertices           = uint64_t(processingInfo.stats.featureBoundaryVertices);
+  m_processingStats.featureNonManifoldVertices        = uint64_t(processingInfo.stats.featureNonManifoldVertices);
+  m_processingStats.featureSharpVertices              = uint64_t(processingInfo.stats.featureSharpVertices);
+  m_processingStats.featureBoundaryLoopComponents     = uint64_t(processingInfo.stats.featureBoundaryLoopComponents);
+  m_processingStats.featureSharpRingComponents        = uint64_t(processingInfo.stats.featureSharpRingComponents);
+  m_processingStats.featureCircularHoleLoops          = uint64_t(processingInfo.stats.featureCircularHoleLoops);
+  m_processingStats.featureCircularHoleVertices       = uint64_t(processingInfo.stats.featureCircularHoleVertices);
+  m_processingStats.featureFunctionalBoundaryVertices = uint64_t(processingInfo.stats.featureFunctionalBoundaryVertices);
+  m_processingStats.featureCylindricalPatchVertices   = uint64_t(processingInfo.stats.featureCylindricalPatchVertices);
+  m_processingStats.featureThinWallVertices           = uint64_t(processingInfo.stats.featureThinWallVertices);
+  m_processingStats.featureProtectedVertices          = uint64_t(processingInfo.stats.featureProtectedVertices);
+  m_processingStats.featureCriticalVertices           = uint64_t(processingInfo.stats.featureCriticalVertices);
+  m_processingStats.featureImportanceSumPpm           = uint64_t(processingInfo.stats.featureImportanceSumPpm);
+  m_processingStats.featureImportanceMaxPpm           = uint64_t(processingInfo.stats.featureImportanceMaxPpm);
 
   if(!hadError)
   {
@@ -616,6 +656,7 @@ bool Scene::endProcessingOnly(bool hadError)
   }
   fseek(m_processingOnlyFile, offsetof(CacheFileHeader, histograms), SEEK_SET);
   fwrite(&m_histograms, sizeof(m_histograms), 1, m_processingOnlyFile);
+  fwrite(&m_processingStats, sizeof(m_processingStats), 1, m_processingOnlyFile);
 
 
   fclose(m_processingOnlyFile);

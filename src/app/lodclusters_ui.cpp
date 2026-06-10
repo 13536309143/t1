@@ -1405,6 +1405,262 @@ void LodClusters::onUIRender()
   }
 
   ImGui::End();
+
+  {
+    const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    const ImVec2         margin(12.0f, 12.0f);
+    const ImVec2         panelSize(std::min(560.0f, mainViewport->WorkSize.x * 0.42f),
+                           std::min(720.0f, mainViewport->WorkSize.y * 0.62f));
+    ImGui::SetNextWindowPos(ImVec2(mainViewport->WorkPos.x + mainViewport->WorkSize.x - margin.x,
+                                   mainViewport->WorkPos.y + mainViewport->WorkSize.y - margin.y),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowSize(panelSize, ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.88f);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
+    if(ImGui::Begin("Runtime / Cache Parameters###BottomRightRuntimeParameters", nullptr, flags))
+    {
+      auto rowText = [](const char* name, const std::string& value) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(name);
+        ImGui::TableNextColumn();
+        ImGui::TextWrapped("%s", value.c_str());
+      };
+
+      auto rowFmt = [&](const char* name, const char* format, auto... args) {
+        rowText(name, fmt::format(fmt::runtime(format), args...));
+      };
+
+      auto rowBool = [&](const char* name, bool value) { rowText(name, value ? "true" : "false"); };
+
+      auto beginParamTable = [](const char* id) {
+        return ImGui::BeginTable(id, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp);
+      };
+
+      ImGui::Text("Frame %d", m_frames);
+      if(m_sceneLoading)
+      {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.15f, 1.0f), "Loading %u%%", uint32_t(m_sceneProgress.load()));
+      }
+
+      if(ImGui::BeginChild("##BottomRightRuntimeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar))
+      {
+        if(m_scene && ImGui::CollapsingHeader("Feature Retention Summary", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          const Scene::ProcessingStatsSnapshot& ps = m_scene->m_processingStats;
+          if(ps.featureInputVertices == 0)
+          {
+            ImGui::TextWrapped("No feature retention stats in this scene cache. Delete or rebuild the old cache once to generate the new cache header.");
+          }
+          else
+          {
+            const double featureVertices = double(std::max<uint64_t>(ps.featureInputVertices, 1));
+            auto pctFeature = [&](uint64_t value) { return 100.0 * double(value) / featureVertices; };
+            if(beginParamTable("##FeatureSummaryStats"))
+            {
+              rowFmt("Feature vertices", "{}", ps.featureInputVertices);
+              rowFmt("Protected vertices", "{} ({:.2f}%)", ps.featureProtectedVertices, pctFeature(ps.featureProtectedVertices));
+              rowFmt("Critical vertices", "{} ({:.2f}%)", ps.featureCriticalVertices, pctFeature(ps.featureCriticalVertices));
+              rowFmt("Circular hole vertices", "{} ({:.2f}%)", ps.featureCircularHoleVertices, pctFeature(ps.featureCircularHoleVertices));
+              rowFmt("Thin-wall vertices", "{} ({:.2f}%)", ps.featureThinWallVertices, pctFeature(ps.featureThinWallVertices));
+              rowFmt("Cylindrical vertices", "{} ({:.2f}%)", ps.featureCylindricalPatchVertices, pctFeature(ps.featureCylindricalPatchVertices));
+              rowFmt("Avg importance", "{:.4f}", double(ps.featureImportanceSumPpm) / featureVertices / 1000000.0);
+              rowFmt("Max importance", "{:.4f}", double(ps.featureImportanceMaxPpm) / 1000000.0);
+              ImGui::EndTable();
+            }
+          }
+        }
+
+        if(ImGui::CollapsingHeader("Scene / Cache", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          if(beginParamTable("##SceneCacheParams"))
+          {
+            rowText("Scene file", m_sceneFilePath.empty() ? std::string("<none>") : m_sceneFilePath.string());
+            rowText("Pending file", m_sceneFilePathDropNew.empty() ? std::string("<none>") : m_sceneFilePathDropNew.string());
+            rowText("Cache suffix", m_sceneCacheSuffix);
+            if(m_scene)
+            {
+              const std::filesystem::path& cachePath = m_scene->getCacheFilePath();
+              const bool cacheExists = std::filesystem::exists(cachePath);
+              rowText("Cache file", cachePath.string());
+              rowBool("Cache exists", cacheExists);
+              rowBool("Loaded from cache", m_scene->m_loadedFromCache);
+              rowBool("Memory mapped cache", m_scene->isMemoryMappedCache());
+              rowFmt("Cache size", "{}", cacheExists ? formatMemorySize(size_t(std::filesystem::file_size(cachePath))) : "0 B");
+              rowFmt("Assembly nodes", "{}", m_scene->m_assemblyNodes.size());
+              rowFmt("Assembly templates", "{}", m_scene->m_assemblyTemplates.size());
+            }
+            else
+            {
+              rowText("Cache file", "<no scene>");
+            }
+            rowBool("Auto load cache", m_sceneLoaderConfig.autoLoadCache);
+            rowBool("Auto save cache", m_sceneLoaderConfig.autoSaveCache);
+            rowBool("Processing only", m_sceneLoaderConfig.processingOnly);
+            rowBool("Processing partial", m_sceneLoaderConfig.processingAllowPartial);
+            rowFmt("Processing threads", "{:.2f}", m_sceneLoaderConfig.processingThreadsPct);
+            ImGui::EndTable();
+          }
+        }
+
+        if(ImGui::CollapsingHeader("Scene Config", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          const SceneConfig& cfg = m_scene ? m_scene->m_config : m_sceneConfig;
+          if(beginParamTable("##SceneConfigParams"))
+          {
+            rowFmt("Config version", "{}", SceneConfig::version);
+            rowFmt("Cluster vertices", "{}", cfg.clusterVertices);
+            rowFmt("Cluster triangles", "{}", cfg.clusterTriangles);
+            rowFmt("Cluster group size", "{}", cfg.clusterGroupSize);
+            rowFmt("LOD node width", "{}", cfg.preferredNodeWidth);
+            rowFmt("LOD decimation", "{:.3f}", cfg.lodLevelDecimationFactor);
+            rowFmt("LOD merge previous", "{:.3f}", cfg.lodErrorMergePrevious);
+            rowFmt("LOD merge additive", "{:.3f}", cfg.lodErrorMergeAdditive);
+            rowFmt("LOD edge limit", "{:.3f}", cfg.lodErrorEdgeLimit);
+            rowFmt("Normal weight", "{:.3f}", cfg.simplifyNormalWeight);
+            rowFmt("Texcoord weight", "{:.3f}", cfg.simplifyTexCoordWeight);
+            rowFmt("Tangent weight", "{:.3f}", cfg.simplifyTangentWeight);
+            rowFmt("Tangent sign weight", "{:.3f}", cfg.simplifyTangentSignWeight);
+            rowFmt("Curvature adaptive", "{:.3f}", cfg.curvatureAdaptiveStrength);
+            rowFmt("Curvature window", "{:.3f}", cfg.curvatureWindowRadius);
+            rowFmt("Sharp edge angle", "{:.3f}", cfg.featureEdgeThreshold);
+            rowFmt("Perceptual weight", "{:.3f}", cfg.perceptualWeight);
+            rowFmt("Silhouette preserve", "{:.3f}", cfg.silhouettePreservation);
+            rowFmt("Assembly min instances", "{}", cfg.assemblyCullingMinInstances);
+            rowFmt("Assembly LOD pixels", "{:.2f}", cfg.assemblyLodPixelThreshold);
+            rowFmt("Meshopt fill weight", "{:.3f}", cfg.meshoptFillWeight);
+            rowFmt("Meshopt split factor", "{:.3f}", cfg.meshoptSplitFactor);
+            rowBool("Compressed data", cfg.useCompressedData);
+            rowFmt("Compressed pos bits", "{}", cfg.compressionPosDropBits);
+            rowFmt("Compressed tex bits", "{}", cfg.compressionTexDropBits);
+            rowFmt("Enabled attributes", "0x{:X}", cfg.enabledAttributes);
+            ImGui::EndTable();
+          }
+        }
+
+        if(ImGui::CollapsingHeader("Runtime Renderer", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          if(beginParamTable("##RuntimeRendererParams"))
+          {
+            rowFmt("LOD pixel error", "{:.3f}", m_frameConfig.lodPixelError);
+            rowFmt("Render resolution", "{} x {}", m_resources.m_frameBuffer.renderSize.width, m_resources.m_frameBuffer.renderSize.height);
+            rowFmt("Visualize", "{}", uint32_t(m_frameConfig.visualize));
+            rowBool("Freeze culling", m_frameConfig.freezeCulling);
+            rowBool("Freeze LOD", m_frameConfig.freezeLoD);
+            rowBool("Culling", m_rendererConfig.useCulling);
+            rowBool("Two-pass culling", m_rendererConfig.useTwoPassCulling);
+            rowBool("Primitive culling", m_rendererConfig.usePrimitiveCulling);
+            rowBool("Separate groups", m_rendererConfig.useSeparateGroups);
+            rowBool("Instance sorting", m_rendererConfig.useSorting);
+            rowBool("Render stats", m_rendererConfig.useRenderStats);
+            rowBool("Compute raster", m_rendererConfig.useComputeRaster);
+            rowBool("Adaptive raster", m_rendererConfig.useAdaptiveRasterRouting);
+            rowFmt("SW max extent", "{:.2f}", m_frameConfig.swRasterThreshold);
+            rowFmt("SW effective extent", "{:.2f}", m_frameConfig.swRasterThresholdEffective);
+            rowFmt("SW min tri density", "{:.2f}", m_frameConfig.swRasterTriangleDensityThreshold);
+            rowFmt("SW effective density", "{:.2f}", m_frameConfig.swRasterTriangleDensityThresholdEffective);
+            ImGui::EndTable();
+          }
+        }
+
+        if(m_scene && ImGui::CollapsingHeader("Scene Output Stats", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          if(beginParamTable("##SceneOutputStats"))
+          {
+            rowFmt("Geometries", "{} / {}", m_scene->getActiveGeometryCount(), m_scene->m_originalGeometryCount);
+            rowFmt("Instances", "{} / {}", m_scene->m_instances.size(), m_scene->m_originalInstanceCount);
+            rowFmt("HI clusters", "{}", m_scene->m_hiClustersCount);
+            rowFmt("HI triangles", "{}", m_scene->m_hiTrianglesCount);
+            rowFmt("HI vertices", "{}", m_scene->m_hiVerticesCount);
+            rowFmt("Total clusters", "{}", m_scene->m_totalClustersCount);
+            rowFmt("Total triangles", "{}", m_scene->m_totalTrianglesCount);
+            rowFmt("Total vertices", "{}", m_scene->m_totalVerticesCount);
+            rowFmt("Max geometry LOD levels", "{}", m_scene->m_maxLodLevelsCount);
+            rowFmt("Max cluster triangles", "{}", m_scene->m_maxClusterTriangles);
+            rowFmt("Max cluster vertices", "{}", m_scene->m_maxClusterVertices);
+            ImGui::EndTable();
+          }
+        }
+
+        if(m_scene && ImGui::CollapsingHeader("Cache Generation Output", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          const Scene::ProcessingStatsSnapshot& ps = m_scene->m_processingStats;
+          if(ps.groups == 0 && m_scene->m_loadedFromCache)
+          {
+            ImGui::TextWrapped("Generation stats are not stored in existing cache. Rebuild cache in this session to populate this section.");
+          }
+          if(beginParamTable("##ProcessingOutputStats"))
+          {
+            rowFmt("Groups", "{}", ps.groups);
+            rowFmt("Clusters", "{}", ps.clusters);
+            rowFmt("Vertices", "{}", ps.vertices);
+            rowFmt("Group unique verts", "{}", ps.groupUniqueVertices);
+            rowFmt("Group header bytes", "{}", formatMemorySize(size_t(ps.groupHeaderBytes)));
+            rowFmt("Cluster header bytes", "{}", formatMemorySize(size_t(ps.clusterHeaderBytes)));
+            rowFmt("Cluster bbox bytes", "{}", formatMemorySize(size_t(ps.clusterBboxBytes)));
+            rowFmt("Cluster gen bytes", "{}", formatMemorySize(size_t(ps.clusterGenBytes)));
+            rowFmt("Triangle index bytes", "{}", formatMemorySize(size_t(ps.triangleIndexBytes)));
+            rowFmt("Vertex all bytes", "{}", formatMemorySize(size_t(ps.vertexPosBytes + ps.vertexTexCoordBytes + ps.vertexNrmBytes)));
+            rowFmt("Vertex pos bytes", "{}", formatMemorySize(size_t(ps.vertexPosBytes)));
+            rowFmt("Vertex tex bytes", "{}", formatMemorySize(size_t(ps.vertexTexCoordBytes)));
+            rowFmt("Vertex normal/tangent bytes", "{}", formatMemorySize(size_t(ps.vertexNrmBytes)));
+            rowFmt("Vertex compressed bytes", "{}", formatMemorySize(size_t(ps.vertexCompressedBytes)));
+            ImGui::EndTable();
+          }
+        }
+
+        if(m_scene && ImGui::CollapsingHeader("Feature Retention Output", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          const Scene::ProcessingStatsSnapshot& ps = m_scene->m_processingStats;
+          const double featureVertices = double(std::max<uint64_t>(ps.featureInputVertices, 1));
+          auto pctFeature = [&](uint64_t value) { return 100.0 * double(value) / featureVertices; };
+          if(beginParamTable("##FeatureOutputStats"))
+          {
+            rowFmt("Input feature vertices", "{}", ps.featureInputVertices);
+            rowFmt("Input feature tris", "{}", ps.featureInputTriangles);
+            rowFmt("Boundary vertices", "{} ({:.2f}%)", ps.featureBoundaryVertices, pctFeature(ps.featureBoundaryVertices));
+            rowFmt("Non-manifold vertices", "{} ({:.2f}%)", ps.featureNonManifoldVertices, pctFeature(ps.featureNonManifoldVertices));
+            rowFmt("Sharp edge vertices", "{} ({:.2f}%)", ps.featureSharpVertices, pctFeature(ps.featureSharpVertices));
+            rowFmt("Boundary components", "{}", ps.featureBoundaryLoopComponents);
+            rowFmt("Sharp ring components", "{}", ps.featureSharpRingComponents);
+            rowFmt("Circular hole loops", "{}", ps.featureCircularHoleLoops);
+            rowFmt("Circular hole vertices", "{} ({:.2f}%)", ps.featureCircularHoleVertices, pctFeature(ps.featureCircularHoleVertices));
+            rowFmt("Functional boundaries", "{} ({:.2f}%)", ps.featureFunctionalBoundaryVertices, pctFeature(ps.featureFunctionalBoundaryVertices));
+            rowFmt("Cylindrical vertices", "{} ({:.2f}%)", ps.featureCylindricalPatchVertices, pctFeature(ps.featureCylindricalPatchVertices));
+            rowFmt("Thin-wall vertices", "{} ({:.2f}%)", ps.featureThinWallVertices, pctFeature(ps.featureThinWallVertices));
+            rowFmt("Protected vertices", "{} ({:.2f}%)", ps.featureProtectedVertices, pctFeature(ps.featureProtectedVertices));
+            rowFmt("Critical vertices", "{} ({:.2f}%)", ps.featureCriticalVertices, pctFeature(ps.featureCriticalVertices));
+            rowFmt("Avg importance", "{:.4f}", ps.featureInputVertices ? double(ps.featureImportanceSumPpm) / double(ps.featureInputVertices) / 1000000.0 : 0.0);
+            rowFmt("Max importance", "{:.4f}", double(ps.featureImportanceMaxPpm) / 1000000.0);
+            ImGui::EndTable();
+          }
+        }
+
+        if(ImGui::CollapsingHeader("Streaming / Grid"))
+        {
+          if(beginParamTable("##StreamingGridParams"))
+          {
+            rowFmt("Grid copies", "{}", m_sceneGridConfig.numCopies);
+            rowFmt("Grid config", "{}", m_sceneGridConfig.gridBits);
+            rowBool("Grid unique geometry", m_sceneGridConfig.uniqueGeometriesForCopies);
+            rowBool("Use streaming", m_tweak.useStreaming);
+            rowFmt("Max resident groups", "{}", m_streamingConfig.maxGroups);
+            rowFmt("Max geometry memory", "{}", formatMemorySize(m_streamingConfig.maxGeometryMegaBytes * 1024ull * 1024ull));
+            if(m_renderScene && m_renderScene->useStreaming)
+            {
+              rowFmt("Resident groups", "{}", stats.residentGroups);
+              rowFmt("Used geometry memory", "{}", formatMemorySize(size_t(stats.usedDataBytes)));
+            }
+            ImGui::EndTable();
+          }
+        }
+      }
+      ImGui::EndChild();
+    }
+    ImGui::End();
+  }
 }
 
 
