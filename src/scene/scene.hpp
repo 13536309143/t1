@@ -85,7 +85,7 @@ struct SceneConfig
 
 
   uint32_t assemblyCullingMinInstances = 8;
-  float    assemblyLodPixelThreshold   = 24.0f;
+  float    assemblyLodPixelThreshold   = 24.0f;//
 
 
   uint32_t reservedData[7] = {};

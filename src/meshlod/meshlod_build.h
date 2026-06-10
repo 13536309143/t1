@@ -19,6 +19,28 @@
 namespace clod
 {
 
+size_t estimateSplitClusterCapacity(const clodConfig& config, const std::vector<Cluster>& clusters, const std::vector<std::vector<int>>& groups)
+{
+	size_t capacity = 0;
+	const size_t minTriangles = std::max<size_t>(1, config.min_triangles);
+
+	for (const std::vector<int>& group : groups)
+	{
+		size_t groupTriangles = 0;
+
+		for (int clusterIndex : group)
+		{
+			assert(clusterIndex >= 0);
+			groupTriangles += clusters[size_t(clusterIndex)].indices.size() / 3;
+		}
+
+		const size_t estimatedSplitCount = std::max<size_t>(1, (groupTriangles + minTriangles - 1) / minTriangles);
+		capacity += estimatedSplitCount;
+	}
+
+	return capacity;
+}
+
 
 // 函数：outputGroup。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
 // 输入/输出：输入由参数、成员状态或绑定资源提供；输出通常表现为返回值、成员状态更新、GPU 缓冲写入或命令缓冲记录。
@@ -248,8 +270,10 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 
 		context.groups = partition(config, mesh, context.clusters, context.pending, context.remap);
 
-		context.clusters.resize(context.clusters.size() + context.pending.size() + context.groups.size());
-		context.pending.resize(context.pending.size() + context.groups.size());
+		const size_t splitCapacity = estimateSplitClusterCapacity(config, context.clusters, context.groups);
+
+		context.clusters.resize(context.clusters.size() + splitCapacity);
+		context.pending.resize(splitCapacity);
 		context.next_pending = 0;
 
 

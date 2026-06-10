@@ -1,12 +1,12 @@
 # 更新日志
 
-## 2026-06-09
 
 本次记录两项核心算法与渲染路径更新：
 
 1. 几何指纹去重 + 实例共享增强
 2. 装配 bbox 层级剔除
 3. 装配级 visibility pass + 装配级 LOD error + 装配模板指纹共享
+4. 修复特殊工业模型 LOD 构建容量估计不足导致的闪退
 
 ---
 
@@ -397,3 +397,159 @@ cmake --build build --config Release
 - 仍存在既有 warning：`streamutils.cpp` 的 C4307 整型常量溢出警告。
 - 仍存在既有 post-build 提示：`pwsh.exe` 未找到。
 - MSBuild 返回成功。
+
+---
+
+## 四、修复特殊工业模型 LOD 构建容量估计不足导致的闪退
+
+### 日期
+
+2026-06-10
+
+### 问题现象
+
+加载 `12.glb` 时程序会闪退。Release 版本直接异常退出，Debug 版本能够触发明确断言：
+
+```text
+Assertion failed: pending_index < context.pending.size()
+file: src/meshlod/meshlod_build.h
+line: 183
+```
+
+Release 下对应的退出码为：
+
+```text
+0xC0000005
+```
+
+这是典型的访问违规，说明不是普通加载失败，而是内部数组写入越界。
+
+### 模型特征
+
+`12.glb` 本身不是坏文件。检查 glTF 结构后可见：
+
+```text
+nodes: 116430
+mesh nodes: 57667
+meshes: 22528
+raw triangles: 35206706
+```
+
+该模型具有大量 node、较多 mesh 实例复用以及复杂工业拓扑。它能够通过 glTF JSON 结构检查，也不存在缺失 `indices`、缺失 `POSITION`、空 mesh、非法 child 引用或 node tree 循环等常见导入错误。
+
+### 变动代码
+
+- `src/meshlod/meshlod_build.h`
+  - 新增 `estimateSplitClusterCapacity(...)`。
+  - 在每轮 LOD 构建进入并行 `clodBuild_iterationTask` 前，根据当前 groups 的真实三角形数量估算本轮可能产生的 split cluster 容量。
+  - 将原来的容量预留：
+
+```cpp
+context.clusters.resize(context.clusters.size() + context.pending.size() + context.groups.size());
+context.pending.resize(context.pending.size() + context.groups.size());
+```
+
+  - 改为：
+
+```cpp
+const size_t splitCapacity = estimateSplitClusterCapacity(config, context.clusters, context.groups);
+
+context.clusters.resize(context.clusters.size() + splitCapacity);
+context.pending.resize(splitCapacity);
+```
+
+### 变动位置
+
+- LOD 构建阶段：
+  - 文件：`src/meshlod/meshlod_build.h`
+  - 函数：`clodBuild(...)`
+  - 位置：每轮 `partition(...)` 之后、并行执行 `clodBuild_iterationTask(...)` 之前。
+
+- 并行 worker 写入阶段：
+  - 文件：`src/meshlod/meshlod_build.h`
+  - 函数：`clodBuild_iterationTask(...)`
+  - 原问题发生在 worker 通过 `context.next_pending.fetch_add(split.size())` 获取写入区间后，写入 `context.pending[pending_index++]` 时越界。
+
+### 实现原理
+
+原算法每轮 LOD 构建时，会先把当前 pending clusters 分组，然后对每个 group 做简化，再把简化后的结果重新 clusterize。旧代码假设本轮新产生的 split cluster 数量不会超过：
+
+```text
+pending.size() + groups.size()
+```
+
+这个估计对多数模型成立，但不是严格上界。对于 `12.glb` 这类复杂工业模型，某些 group 简化后仍然保持较高复杂度，重新 `clusterize` 后可能分裂出比预估更多的 cluster。
+
+旧流程中：
+
+1. 主线程按较小容量 resize `context.pending` 和 `context.clusters`。
+2. 多个 worker 并行处理不同 group。
+3. 每个 worker 用 atomic 获取一段写入区间。
+4. 某些 group 的 `split.size()` 超过旧估计。
+5. `pending_index` 超出 `context.pending.size()`。
+6. Debug 触发断言，Release 发生越界写并闪退。
+
+新逻辑改为在每轮 worker 启动前做保守容量估计：
+
+1. 遍历本轮所有 group。
+2. 统计每个 group 当前包含的三角形数量。
+3. 用 `config.min_triangles` 估计该 group 最多可能拆成多少 cluster。
+4. 汇总得到本轮 split cluster 的预留容量。
+5. 再启动并行 worker。
+
+这样不需要在 worker 中动态扩容，避免了并行写 vector 时的数据竞争；同时容量估计比旧逻辑更接近真实上界，能够覆盖 `12.glb` 这类特殊拓扑。
+
+### 影响
+
+- 修复 `12.glb` 在 LOD 构建阶段的闪退。
+- 对普通模型的输出逻辑没有语义改变，只是本轮临时容量预留更稳健。
+- 对部分复杂模型会略微增加 LOD 构建阶段的临时内存预留，但避免了越界写入。
+- 修复位置在 CPU 预处理阶段，不影响 shader、GPU traversal 或运行时渲染路径。
+- 与装配级 visibility pass、装配级 LOD、几何指纹去重逻辑无直接耦合。
+
+### 验证结果
+
+已使用 `12.glb` 验证：
+
+```powershell
+.\_bin\Debug\t1.exe --scene E:\vk_lod_clusters1\1\_downloaded_resources\12.glb --processingonly 1 --autoloadcache 0 --autosavecache 0 --assemblymininstances 0
+```
+
+结果：
+
+```text
+Scene::endProcessOnlySave completed successfully
+exit=0
+```
+
+已使用 Release 验证：
+
+```powershell
+.\_bin\Release\t1.exe --scene E:\vk_lod_clusters1\1\_downloaded_resources\12.glb --processingonly 1 --assemblymininstances 0
+```
+
+结果：
+
+```text
+geometries: 10884
+Groups: 75248
+Clusters: 615278
+Vertices: 66478647
+Scene::endProcessOnlySave completed successfully
+saved: E:\vk_lod_clusters1\1\_downloaded_resources\12.glb.zippp
+exit=0
+```
+
+构建验证：
+
+```powershell
+cmake --build build --config Debug
+cmake --build build --config Release
+```
+
+结果：
+
+- Debug 构建成功。
+- Release 构建成功。
+- `git diff --check -- src\meshlod\meshlod_build.h` 未发现空白错误。
+- 仍存在既有 post-build 提示：`pwsh.exe` 未找到。
