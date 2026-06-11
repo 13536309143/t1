@@ -7,6 +7,7 @@
 #pragma once
 
 #include "meshlod_impl.h"
+#include "meshlod_learned_importance.h"
 
 namespace clod
 {
@@ -46,6 +47,45 @@ std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mes
 	if (target_count > indices.size())
 		return indices;
 
+	float learnedAverage = 0.0f;
+	float learnedMaximum = 0.0f;
+	if (config.learned_importance_enable && mesh.learned_importance && !indices.empty())
+	{
+		double sum = 0.0;
+		for (size_t i = 0; i < indices.size(); ++i)
+		{
+			unsigned int v = indices[i];
+			if (v < mesh.vertex_count)
+			{
+				float importance = mesh.learned_importance[v];
+				sum += double(importance);
+				learnedMaximum = std::max(learnedMaximum, importance);
+			}
+		}
+
+		learnedAverage = float(sum / double(indices.size()));
+		float preserve = learnedClamp(learnedAverage * config.learned_importance_target_boost, 0.0f, 0.85f);
+		size_t boostedTarget = target_count + size_t(float(indices.size() - target_count) * preserve);
+		target_count = std::min(indices.size(), boostedTarget);
+		target_count = std::max<size_t>(3, (target_count / 3) * 3);
+	}
+
+	std::vector<unsigned char> learnedLocks;
+	const unsigned char* simplifyLocks = locks.empty() ? nullptr : &locks[0];
+	if (config.learned_importance_enable && mesh.learned_importance && config.learned_importance_protect_threshold < 1.0f)
+	{
+		learnedLocks = locks;
+		float threshold = learnedClamp(config.learned_importance_protect_threshold, 0.0f, 1.0f);
+
+		for (size_t i = 0; i < mesh.vertex_count && i < learnedLocks.size(); ++i)
+		{
+			if (mesh.learned_importance[i] >= threshold)
+				learnedLocks[i] |= meshopt_SimplifyVertex_Protect;
+		}
+
+		simplifyLocks = learnedLocks.empty() ? simplifyLocks : learnedLocks.data();
+	}
+
 	std::vector<unsigned int> lod(indices.size());
 
 	unsigned int options = meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute | (config.simplify_permissive ? meshopt_SimplifyPermissive : 0) | (config.simplify_regularize ? meshopt_SimplifyRegularize : 0);
@@ -53,19 +93,19 @@ std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mes
 	lod.resize(meshopt_simplifyWithAttributes(&lod[0], &indices[0], indices.size(),
 	    mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride,
 	    mesh.vertex_attributes, mesh.vertex_attributes_stride, mesh.attribute_weights, mesh.attribute_count,
-	    &locks[0], target_count, FLT_MAX, options, error));
+	    simplifyLocks, target_count, FLT_MAX, options, error));
 
 	if (lod.size() > target_count && config.simplify_fallback_permissive && !config.simplify_permissive)
 	{
 		lod.resize(meshopt_simplifyWithAttributes(&lod[0], &indices[0], indices.size(),
 		    mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride,
 		    mesh.vertex_attributes, mesh.vertex_attributes_stride, mesh.attribute_weights, mesh.attribute_count,
-		    &locks[0], target_count, FLT_MAX, options | meshopt_SimplifyPermissive, error));
+		    simplifyLocks, target_count, FLT_MAX, options | meshopt_SimplifyPermissive, error));
 	}
 
 	if (lod.size() > target_count && config.simplify_fallback_sloppy)
 	{
-		simplifyFallback(lod, mesh, indices, locks, target_count, error);
+		simplifyFallback(lod, mesh, indices, learnedLocks.empty() ? locks : learnedLocks, target_count, error);
 		*error *= config.simplify_error_factor_sloppy;
 	}
 
@@ -94,6 +134,12 @@ std::vector<unsigned int> simplify(const clodConfig& config, const clodMesh& mes
 		}
 
 		*error = std::min(*error, sqrtf(max_edge_sq) * config.simplify_error_edge_limit);
+	}
+
+	if (config.learned_importance_enable && mesh.learned_importance)
+	{
+		float scale = 1.0f + learnedClamp(config.learned_importance_error_scale, 0.0f, 8.0f) * (learnedAverage * 0.7f + learnedMaximum * 0.3f);
+		*error *= scale;
 	}
 
 	return lod;

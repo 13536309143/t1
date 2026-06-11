@@ -667,6 +667,26 @@ void LodClusters::onUIRender()
         PE::treePop();
       }
 
+      if(PE::treeNode("Learning-driven simplification"))
+      {
+        PE::InputIntClamped("Enable learned importance", (int*)&m_sceneConfigEdit.learnedImportanceEnable, 0, 1, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "Uses a lightweight MLP to predict per-vertex importance during cache generation.");
+        PE::SliderFloat("Importance strength", &m_sceneConfigEdit.learnedImportanceStrength, 0.0f, 4.0f, "%.3f", 0,
+                        "Scales the MLP importance output before it affects simplification.");
+        PE::SliderFloat("Protect threshold", &m_sceneConfigEdit.learnedImportanceProtectThreshold, 0.0f, 1.0f, "%.3f", 0,
+                        "Vertices above this learned importance are hard protected.");
+        PE::SliderFloat("Target boost", &m_sceneConfigEdit.learnedImportanceTargetBoost, 0.0f, 1.0f, "%.3f", 0,
+                        "Increases local target triangle count in high-importance regions.");
+        PE::SliderFloat("Error scale", &m_sceneConfigEdit.learnedImportanceErrorScale, 0.0f, 4.0f, "%.3f", 0,
+                        "Raises LOD error for high-importance regions so runtime LOD keeps detail longer.");
+        PE::InputIntClamped("Topology edge limit", (int*)&m_sceneConfigEdit.learnedImportanceTopologyEdgeLimit, 0, 64 * 1024 * 1024, 1024, 1024,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "Maximum directed edges per geometry for exact boundary/non-manifold descriptors. 0 disables the limit.");
+
+        PE::treePop();
+      }
+
 
       bool hasChanges = memcmp(&m_sceneConfigEdit, &m_sceneConfig, sizeof(m_sceneConfigEdit)) != 0;
 
@@ -1445,6 +1465,12 @@ void LodClusters::onUIRender()
             rowFmt("LOD decimation", "{:.3f}", cfg.lodLevelDecimationFactor);
             rowFmt("Assembly min instances", "{}", cfg.assemblyCullingMinInstances);
             rowFmt("Assembly LOD pixels", "{:.2f}", cfg.assemblyLodPixelThreshold);
+            rowBool("Learned importance", cfg.learnedImportanceEnable != 0);
+            rowFmt("Learned strength", "{:.3f}", cfg.learnedImportanceStrength);
+            rowFmt("Learned protect", "{:.3f}", cfg.learnedImportanceProtectThreshold);
+            rowFmt("Learned target boost", "{:.3f}", cfg.learnedImportanceTargetBoost);
+            rowFmt("Learned error scale", "{:.3f}", cfg.learnedImportanceErrorScale);
+            rowFmt("Learned topology edges", "{}", cfg.learnedImportanceTopologyEdgeLimit);
             rowFmt("Meshopt fill weight", "{:.3f}", cfg.meshoptFillWeight);
             rowFmt("Meshopt split factor", "{:.3f}", cfg.meshoptSplitFactor);
             rowBool("Compressed data", cfg.useCompressedData);

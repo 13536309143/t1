@@ -102,6 +102,12 @@ clodConfig clodDefaultConfig(size_t max_triangles)
 	config.simplify_permissive = true;
 	config.simplify_fallback_permissive = true;
 	config.simplify_fallback_sloppy = true;
+	config.learned_importance_enable = false;
+	config.learned_importance_strength = 1.0f;
+	config.learned_importance_protect_threshold = 0.92f;
+	config.learned_importance_target_boost = 0.35f;
+	config.learned_importance_error_scale = 1.25f;
+	config.learned_importance_topology_edge_limit = 3000000u;
 
 	return config;
 }
@@ -197,6 +203,27 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 
 
 	meshopt_generatePositionRemap(&context.remap[0], mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride);
+	if (config.learned_importance_enable)
+	{
+		context.learned_importance = computeLearnedImportance(config, mesh);
+
+		for (size_t i = 0; i < mesh.vertex_count; ++i)
+		{
+			unsigned int r = context.remap[i];
+			if (r < context.learned_importance.size() && i < context.learned_importance.size())
+				context.learned_importance[r] = std::max(context.learned_importance[r], context.learned_importance[i]);
+		}
+
+		for (size_t i = 0; i < mesh.vertex_count; ++i)
+		{
+			unsigned int r = context.remap[i];
+			if (r < context.learned_importance.size())
+				context.learned_importance[i] = context.learned_importance[r];
+		}
+
+		context.mesh.learned_importance = context.learned_importance.data();
+	}
+
 	if (mesh.attribute_protect_mask)
 	{
 		size_t max_attributes = mesh.vertex_attributes_stride / sizeof(float);

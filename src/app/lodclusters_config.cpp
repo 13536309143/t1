@@ -58,6 +58,12 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"assemblymininstances"}, &m_sceneConfig.assemblyCullingMinInstances);
   m_info.parameterRegistry->add({"assemblylodpixels"}, &m_sceneConfig.assemblyLodPixelThreshold);
   m_info.parameterRegistry->add({"meshoptfillweight"}, &m_sceneConfig.meshoptFillWeight);
+  m_info.parameterRegistry->add({"learnedimportance"}, &m_sceneConfig.learnedImportanceEnable);
+  m_info.parameterRegistry->add({"learnedstrength"}, &m_sceneConfig.learnedImportanceStrength);
+  m_info.parameterRegistry->add({"learnedprotect"}, &m_sceneConfig.learnedImportanceProtectThreshold);
+  m_info.parameterRegistry->add({"learnedtargetboost"}, &m_sceneConfig.learnedImportanceTargetBoost);
+  m_info.parameterRegistry->add({"learnederrorscale"}, &m_sceneConfig.learnedImportanceErrorScale);
+  m_info.parameterRegistry->add({"learnedtopologyedges"}, &m_sceneConfig.learnedImportanceTopologyEdgeLimit);
 
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"shadowray"}, &m_frameConfig.frameConstants.doShadow);

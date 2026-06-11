@@ -201,6 +201,12 @@ cmake -S . -B build -DNVPROCORE2_DOWNLOAD=OFF
 - `--simplifynormalweight`：normal 在属性感知简化中的权重。
 - `--simplifytangentweight`：tangent 在属性感知简化中的权重。
 - `--simplifytangentsignweight`：tangent sign 在属性感知简化中的权重。
+- `--learnedimportance`：是否启用轻量 MLP per-vertex learned importance，`1` 启用，`0` 关闭。
+- `--learnedstrength`：MLP importance 输出强度，数值越高，特征区域越保守。
+- `--learnedprotect`：高置信 importance 顶点硬保护阈值。
+- `--learnedtargetboost`：高 importance 区域的目标三角形保留增量。
+- `--learnederrorscale`：高 importance 区域的 LOD error 放大系数。
+- `--learnedtopologyedges`：用于精确边界/非流形描述符的单 geometry 有向边数量上限，`0` 表示不限制。
 
 cache 和预处理：
 

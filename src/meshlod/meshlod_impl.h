@@ -58,6 +58,7 @@ struct IterationContext
 	clodOutput output_callback = nullptr;
 	std::vector<unsigned char> locks;
 	std::vector<unsigned int>  remap;
+	std::vector<float>         learned_importance;
 
 	int depth = 0;
 	std::vector<Cluster> clusters;

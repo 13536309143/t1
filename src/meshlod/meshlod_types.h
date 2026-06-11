@@ -39,6 +39,12 @@ struct clodConfig
 	bool simplify_fallback_permissive;
 	bool simplify_fallback_sloppy;
 	bool simplify_regularize;
+	bool learned_importance_enable;
+	float learned_importance_strength;
+	float learned_importance_protect_threshold;
+	float learned_importance_target_boost;
+	float learned_importance_error_scale;
+	unsigned int learned_importance_topology_edge_limit;
 	bool optimize_bounds;
 	bool optimize_clusters;
 };
@@ -60,6 +66,7 @@ struct clodMesh
 	const float* attribute_weights;
 	size_t attribute_count;
 	unsigned int attribute_protect_mask;
+	const float* learned_importance;
 };
 
 

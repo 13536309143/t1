@@ -535,6 +535,12 @@ namespace lodclusters {
      clodInfo.simplify_error_merge_previous = m_config.lodErrorMergePrevious;
      clodInfo.simplify_error_merge_additive = m_config.lodErrorMergeAdditive;
      clodInfo.simplify_error_edge_limit = m_config.lodErrorEdgeLimit;
+     clodInfo.learned_importance_enable = m_config.learnedImportanceEnable != 0;
+     clodInfo.learned_importance_strength = m_config.learnedImportanceStrength;
+     clodInfo.learned_importance_protect_threshold = m_config.learnedImportanceProtectThreshold;
+     clodInfo.learned_importance_target_boost = m_config.learnedImportanceTargetBoost;
+     clodInfo.learned_importance_error_scale = m_config.learnedImportanceErrorScale;
+     clodInfo.learned_importance_topology_edge_limit = m_config.learnedImportanceTopologyEdgeLimit;
 
 
      clodMesh inputMesh                = {};

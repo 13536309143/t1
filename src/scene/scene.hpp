@@ -38,7 +38,7 @@ namespace lodclusters {
 // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
 struct SceneConfig
 {
-  static const uint32_t version = 6;
+  static const uint32_t version = 7;
 
 
   uint32_t clusterVertices    = 128;
@@ -80,8 +80,14 @@ struct SceneConfig
   uint32_t assemblyCullingMinInstances = 8;
   float    assemblyLodPixelThreshold   = 24.0f;//
 
+  uint32_t learnedImportanceEnable = 1;
+  uint32_t learnedImportanceTopologyEdgeLimit = 3000000u;
+  float    learnedImportanceStrength = 1.0f;
+  float    learnedImportanceProtectThreshold = 0.92f;
+  float    learnedImportanceTargetBoost = 0.35f;
+  float    learnedImportanceErrorScale = 1.25f;
 
-  uint32_t reservedData[12] = {};
+  uint32_t reservedData[6] = {};
 
 
 };
@@ -756,7 +762,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;
-      uint32_t geoVersion          = 11;
+      uint32_t geoVersion          = 12;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
