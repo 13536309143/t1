@@ -38,7 +38,7 @@ namespace lodclusters {
 // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
 struct SceneConfig
 {
-  static const uint32_t version = 6;
+  static const uint32_t version = 8;
 
 
   uint32_t clusterVertices    = 128;
@@ -80,6 +80,10 @@ struct SceneConfig
   uint32_t assemblyCullingMinInstances = 8;
   float    assemblyLodPixelThreshold   = 24.0f;//
 
+  bool  featureConstraints        = true;
+  float featureImportanceWeight   = 4.0f;
+  float featureProtectThreshold   = 0.78f;
+  float featureCriticalThreshold  = 0.93f;
 
   uint32_t reservedData[12] = {};
 
@@ -124,6 +128,8 @@ struct SceneLoaderConfig
 // 使用约束：若该结构被着色器或缓存文件读取，字段顺序、对齐方式和默认值都属于接口契约。
 struct SceneGridConfig
 {
+  static const uint32_t minCopies = 1;
+  static const uint32_t maxCopies = 32;
 
 
   bool      uniqueGeometriesForCopies = false;
@@ -574,7 +580,7 @@ public:
 
   struct ProcessingStatsSnapshot
   {
-    static const uint32_t version = 1;
+    static const uint32_t version = 2;
 
     uint64_t groups                = 0;
     uint64_t clusters              = 0;
@@ -589,6 +595,22 @@ public:
     uint64_t clusterBboxBytes      = 0;
     uint64_t clusterHeaderBytes    = 0;
     uint64_t clusterGenBytes       = 0;
+    uint64_t inputFeatureVertices  = 0;
+    uint64_t inputFeatureTris      = 0;
+    uint64_t boundaryVertices      = 0;
+    uint64_t nonManifoldVertices   = 0;
+    uint64_t sharpEdgeVertices     = 0;
+    uint64_t boundaryComponents    = 0;
+    uint64_t sharpRingComponents   = 0;
+    uint64_t circularHoleLoops     = 0;
+    uint64_t circularHoleVertices  = 0;
+    uint64_t functionalBoundaryVertices = 0;
+    uint64_t cylindricalVertices   = 0;
+    uint64_t thinWallVertices      = 0;
+    uint64_t protectedVertices     = 0;
+    uint64_t criticalVertices      = 0;
+    uint64_t featureImportanceSumPpm = 0;
+    uint64_t featureImportanceMaxPpm = 0;
 
   };
 
@@ -744,7 +766,10 @@ private:
 
       return header.magic == reference.magic && header.geoVersion == reference.geoVersion
              && header.geoStructSize == reference.geoStructSize && header.configStructSize == reference.configStructSize
-             && header.alignment == reference.alignment;
+             && header.configVersion == reference.configVersion && header.histogramsVersion == reference.histogramsVersion
+             && header.histogramStructSize == reference.histogramStructSize
+             && header.processingStatsVersion == reference.processingStatsVersion
+             && header.processingStatsStructSize == reference.processingStatsStructSize && header.alignment == reference.alignment;
     }
 
   private:
@@ -924,6 +949,22 @@ private:
       std::atomic_uint64_t clusterBboxBytes      = 0;
       std::atomic_uint64_t clusterHeaderBytes    = 0;
       std::atomic_uint64_t clusterGenBytes       = 0;
+      std::atomic_uint64_t inputFeatureVertices  = 0;
+      std::atomic_uint64_t inputFeatureTris      = 0;
+      std::atomic_uint64_t boundaryVertices      = 0;
+      std::atomic_uint64_t nonManifoldVertices   = 0;
+      std::atomic_uint64_t sharpEdgeVertices     = 0;
+      std::atomic_uint64_t boundaryComponents    = 0;
+      std::atomic_uint64_t sharpRingComponents   = 0;
+      std::atomic_uint64_t circularHoleLoops     = 0;
+      std::atomic_uint64_t circularHoleVertices  = 0;
+      std::atomic_uint64_t functionalBoundaryVertices = 0;
+      std::atomic_uint64_t cylindricalVertices   = 0;
+      std::atomic_uint64_t thinWallVertices      = 0;
+      std::atomic_uint64_t protectedVertices     = 0;
+      std::atomic_uint64_t criticalVertices      = 0;
+      std::atomic_uint64_t featureImportanceSumPpm = 0;
+      std::atomic_uint64_t featureImportanceMaxPpm = 0;
     } stats;
 
 

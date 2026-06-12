@@ -41,6 +41,30 @@ struct clodConfig
 	bool simplify_regularize;
 	bool optimize_bounds;
 	bool optimize_clusters;
+	bool feature_constraints;
+	float feature_attribute_weight;
+	float feature_protect_threshold;
+	float feature_critical_threshold;
+};
+
+struct clodFeatureMetrics
+{
+	uint64_t input_feature_vertices = 0;
+	uint64_t input_feature_tris = 0;
+	uint64_t boundary_vertices = 0;
+	uint64_t non_manifold_vertices = 0;
+	uint64_t sharp_edge_vertices = 0;
+	uint64_t boundary_components = 0;
+	uint64_t sharp_ring_components = 0;
+	uint64_t circular_hole_loops = 0;
+	uint64_t circular_hole_vertices = 0;
+	uint64_t functional_boundary_vertices = 0;
+	uint64_t cylindrical_vertices = 0;
+	uint64_t thin_wall_vertices = 0;
+	uint64_t protected_vertices = 0;
+	uint64_t critical_vertices = 0;
+	uint64_t feature_importance_sum_ppm = 0;
+	uint64_t feature_importance_max_ppm = 0;
 };
 
 
@@ -60,6 +84,9 @@ struct clodMesh
 	const float* attribute_weights;
 	size_t attribute_count;
 	unsigned int attribute_protect_mask;
+	const float* feature_importance;
+	const unsigned char* feature_lock;
+	clodFeatureMetrics* feature_metrics;
 };
 
 

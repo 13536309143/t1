@@ -632,6 +632,22 @@ bool Scene::endProcessingOnly(ProcessingInfo& processingInfo, bool hadError)
   m_processingStats.clusterBboxBytes      = uint64_t(processingInfo.stats.clusterBboxBytes);
   m_processingStats.clusterHeaderBytes    = uint64_t(processingInfo.stats.clusterHeaderBytes);
   m_processingStats.clusterGenBytes       = uint64_t(processingInfo.stats.clusterGenBytes);
+  m_processingStats.inputFeatureVertices  = uint64_t(processingInfo.stats.inputFeatureVertices);
+  m_processingStats.inputFeatureTris      = uint64_t(processingInfo.stats.inputFeatureTris);
+  m_processingStats.boundaryVertices      = uint64_t(processingInfo.stats.boundaryVertices);
+  m_processingStats.nonManifoldVertices   = uint64_t(processingInfo.stats.nonManifoldVertices);
+  m_processingStats.sharpEdgeVertices     = uint64_t(processingInfo.stats.sharpEdgeVertices);
+  m_processingStats.boundaryComponents    = uint64_t(processingInfo.stats.boundaryComponents);
+  m_processingStats.sharpRingComponents   = uint64_t(processingInfo.stats.sharpRingComponents);
+  m_processingStats.circularHoleLoops     = uint64_t(processingInfo.stats.circularHoleLoops);
+  m_processingStats.circularHoleVertices  = uint64_t(processingInfo.stats.circularHoleVertices);
+  m_processingStats.functionalBoundaryVertices = uint64_t(processingInfo.stats.functionalBoundaryVertices);
+  m_processingStats.cylindricalVertices   = uint64_t(processingInfo.stats.cylindricalVertices);
+  m_processingStats.thinWallVertices      = uint64_t(processingInfo.stats.thinWallVertices);
+  m_processingStats.protectedVertices     = uint64_t(processingInfo.stats.protectedVertices);
+  m_processingStats.criticalVertices      = uint64_t(processingInfo.stats.criticalVertices);
+  m_processingStats.featureImportanceSumPpm = uint64_t(processingInfo.stats.featureImportanceSumPpm);
+  m_processingStats.featureImportanceMaxPpm = uint64_t(processingInfo.stats.featureImportanceMaxPpm);
 
   if(!hadError)
   {

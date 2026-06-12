@@ -208,6 +208,32 @@ void Scene::ProcessingInfo::logEnd()
     LOGI("Vertex Comp Bytes:    %12" PRIu64 "\n", (uint64_t)stats.vertexCompressedBytes);
 
     LOGI("\n");
+
+    if(stats.inputFeatureVertices)
+    {
+      double invVertices = 100.0 / double(std::max<uint64_t>(1, uint64_t(stats.inputFeatureVertices)));
+      double avgImportance = double(uint64_t(stats.featureImportanceSumPpm)) / double(std::max<uint64_t>(1, uint64_t(stats.inputFeatureVertices))) / 1000000.0;
+      double maxImportance = double(uint64_t(stats.featureImportanceMaxPpm)) / 1000000.0;
+
+      LOGI("Feature Retention Stats\n");
+      LOGI("Input Feature Vertices:     %12" PRIu64 "\n", uint64_t(stats.inputFeatureVertices));
+      LOGI("Input Feature Tris:         %12" PRIu64 "\n", uint64_t(stats.inputFeatureTris));
+      LOGI("Boundary Vertices:          %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.boundaryVertices), double(uint64_t(stats.boundaryVertices)) * invVertices);
+      LOGI("Non-Manifold Vertices:      %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.nonManifoldVertices), double(uint64_t(stats.nonManifoldVertices)) * invVertices);
+      LOGI("Sharp Edge Vertices:        %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.sharpEdgeVertices), double(uint64_t(stats.sharpEdgeVertices)) * invVertices);
+      LOGI("Boundary Components:        %12" PRIu64 "\n", uint64_t(stats.boundaryComponents));
+      LOGI("Sharp Ring Components:      %12" PRIu64 "\n", uint64_t(stats.sharpRingComponents));
+      LOGI("Circular Hole Loops:        %12" PRIu64 "\n", uint64_t(stats.circularHoleLoops));
+      LOGI("Circular Hole Vertices:     %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.circularHoleVertices), double(uint64_t(stats.circularHoleVertices)) * invVertices);
+      LOGI("Functional Boundaries:      %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.functionalBoundaryVertices), double(uint64_t(stats.functionalBoundaryVertices)) * invVertices);
+      LOGI("Cylindrical Vertices:       %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.cylindricalVertices), double(uint64_t(stats.cylindricalVertices)) * invVertices);
+      LOGI("Thin-Wall Vertices:         %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.thinWallVertices), double(uint64_t(stats.thinWallVertices)) * invVertices);
+      LOGI("Protected Vertices:         %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.protectedVertices), double(uint64_t(stats.protectedVertices)) * invVertices);
+      LOGI("Critical Vertices:          %12" PRIu64 " (%5.2f%%)\n", uint64_t(stats.criticalVertices), double(uint64_t(stats.criticalVertices)) * invVertices);
+      LOGI("Avg Feature Importance:     %12.4f\n", avgImportance);
+      LOGI("Max Feature Importance:     %12.4f\n", maxImportance);
+      LOGI("\n");
+    }
   }
 
 }
@@ -333,6 +359,22 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
   m_processingStats.clusterBboxBytes      = uint64_t(processingInfo.stats.clusterBboxBytes);
   m_processingStats.clusterHeaderBytes    = uint64_t(processingInfo.stats.clusterHeaderBytes);
   m_processingStats.clusterGenBytes       = uint64_t(processingInfo.stats.clusterGenBytes);
+  m_processingStats.inputFeatureVertices  = uint64_t(processingInfo.stats.inputFeatureVertices);
+  m_processingStats.inputFeatureTris      = uint64_t(processingInfo.stats.inputFeatureTris);
+  m_processingStats.boundaryVertices      = uint64_t(processingInfo.stats.boundaryVertices);
+  m_processingStats.nonManifoldVertices   = uint64_t(processingInfo.stats.nonManifoldVertices);
+  m_processingStats.sharpEdgeVertices     = uint64_t(processingInfo.stats.sharpEdgeVertices);
+  m_processingStats.boundaryComponents    = uint64_t(processingInfo.stats.boundaryComponents);
+  m_processingStats.sharpRingComponents   = uint64_t(processingInfo.stats.sharpRingComponents);
+  m_processingStats.circularHoleLoops     = uint64_t(processingInfo.stats.circularHoleLoops);
+  m_processingStats.circularHoleVertices  = uint64_t(processingInfo.stats.circularHoleVertices);
+  m_processingStats.functionalBoundaryVertices = uint64_t(processingInfo.stats.functionalBoundaryVertices);
+  m_processingStats.cylindricalVertices   = uint64_t(processingInfo.stats.cylindricalVertices);
+  m_processingStats.thinWallVertices      = uint64_t(processingInfo.stats.thinWallVertices);
+  m_processingStats.protectedVertices     = uint64_t(processingInfo.stats.protectedVertices);
+  m_processingStats.criticalVertices      = uint64_t(processingInfo.stats.criticalVertices);
+  m_processingStats.featureImportanceSumPpm = uint64_t(processingInfo.stats.featureImportanceSumPpm);
+  m_processingStats.featureImportanceMaxPpm = uint64_t(processingInfo.stats.featureImportanceMaxPpm);
 
   if(loadResult != SCENE_RESULT_SUCCESS)
   {
@@ -455,15 +497,16 @@ void Scene::deinit()
 void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 {
   m_gridConfig = gridConfig;
+  m_gridConfig.numCopies = std::clamp(m_gridConfig.numCopies, SceneGridConfig::minCopies, SceneGridConfig::maxCopies);
 
 
-  size_t copiesCount = std::max(1u, gridConfig.numCopies);
+  size_t copiesCount = m_gridConfig.numCopies;
 
   size_t numOldCopies = m_instances.size() / m_originalInstanceCount;
 
 
   m_instances.resize(m_originalInstanceCount * copiesCount);
-  m_activeGeometryCount = gridConfig.uniqueGeometriesForCopies ? m_originalGeometryCount * copiesCount : m_originalGeometryCount;
+  m_activeGeometryCount = m_gridConfig.uniqueGeometriesForCopies ? m_originalGeometryCount * copiesCount : m_originalGeometryCount;
 
 
   // 函数：rng。封装本文件中的一段核心逻辑，保持调用方只依赖清晰的接口语义。
@@ -477,7 +520,7 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
   // 设计要点：该函数的主要价值在于隔离局部实现细节，使模块边界和调用顺序更容易审查。
   std::uniform_real_distribution<float> randomUnorm(0.0f, 1.0f);
 
-  uint32_t axis    = gridConfig.gridBits;
+  uint32_t axis    = m_gridConfig.gridBits;
   size_t   sq      = 1;
   int      numAxis = 0;
   if(!axis)
@@ -519,7 +562,7 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 
   for(size_t copyIndex = 1; copyIndex < copiesCount; copyIndex++)
   {
-    gridShift = gridConfig.refShift * modelExtent;
+    gridShift = m_gridConfig.refShift * modelExtent;
     size_t c  = copyIndex;
 
     float u = 0;
@@ -584,9 +627,9 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 
     glm::mat4 scaleMatrix = glm::mat4(1.0f);
 
-    if(gridConfig.minScale != 1.0f || gridConfig.maxScale != 1.0f)
+    if(m_gridConfig.minScale != 1.0f || m_gridConfig.maxScale != 1.0f)
     {
-      float scale = glm::mix(gridConfig.minScale, gridConfig.maxScale, randomUnorm(rng));
+      float scale = glm::mix(m_gridConfig.minScale, m_gridConfig.maxScale, randomUnorm(rng));
       scaleMatrix = glm::scale(scaleMatrix, glm::vec3(scale));
 
       if(scale < 1.0f)
@@ -610,10 +653,10 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
       gridDir           = glm::normalize(gridDir);
 
 
-      if(gridConfig.snapAngle > 0.0)
+      if(m_gridConfig.snapAngle > 0.0)
       {
 
-        float remainder = std::fmod(gridAngle, gridConfig.snapAngle);
+        float remainder = std::fmod(gridAngle, m_gridConfig.snapAngle);
         gridAngle       = gridAngle - remainder;
       }
 
@@ -629,7 +672,7 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 
       instance = m_instances[i];
 
-      if(gridConfig.uniqueGeometriesForCopies)
+      if(m_gridConfig.uniqueGeometriesForCopies)
       {
 
 

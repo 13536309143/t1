@@ -168,6 +168,8 @@ void LodClusters::handleChanges()
   if(m_sceneLoading)
     return;
 
+  m_sceneGridConfig.numCopies = std::clamp(m_sceneGridConfig.numCopies, SceneGridConfig::minCopies, SceneGridConfig::maxCopies);
+
   if(m_sceneFilePathDropLast != m_sceneFilePathDropNew)
   {
     std::filesystem::path newFilePath = m_sceneFilePathDropNew;

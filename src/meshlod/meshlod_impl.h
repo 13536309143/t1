@@ -19,6 +19,9 @@
 #include <algorithm>
 #include <vector>
 #include <atomic>
+#include <unordered_map>
+#include <queue>
+#include <array>
 #include <meshoptimizer.h>
 
 namespace clod
@@ -58,6 +61,10 @@ struct IterationContext
 	clodOutput output_callback = nullptr;
 	std::vector<unsigned char> locks;
 	std::vector<unsigned int>  remap;
+	std::vector<float> feature_importance;
+	std::vector<unsigned char> feature_locks;
+	std::vector<float> feature_attributes;
+	std::vector<float> feature_attribute_weights;
 
 	int depth = 0;
 	std::vector<Cluster> clusters;

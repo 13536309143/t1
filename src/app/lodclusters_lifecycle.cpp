@@ -241,7 +241,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
 
 
-    m_sceneGridConfig.uniqueGeometriesForCopies = true;
+    m_sceneGridConfig.uniqueGeometriesForCopies = false;
 
     if(m_sceneGridConfig.numCopies == 1)
     {

@@ -535,6 +535,10 @@ namespace lodclusters {
      clodInfo.simplify_error_merge_previous = m_config.lodErrorMergePrevious;
      clodInfo.simplify_error_merge_additive = m_config.lodErrorMergeAdditive;
      clodInfo.simplify_error_edge_limit = m_config.lodErrorEdgeLimit;
+     clodInfo.feature_constraints = m_config.featureConstraints;
+     clodInfo.feature_attribute_weight = m_config.featureImportanceWeight;
+     clodInfo.feature_protect_threshold = m_config.featureProtectThreshold;
+     clodInfo.feature_critical_threshold = m_config.featureCriticalThreshold;
 
 
      clodMesh inputMesh                = {};
@@ -544,6 +548,8 @@ namespace lodclusters {
      inputMesh.vertex_positions_stride = sizeof(glm::vec3);
      inputMesh.index_count             = geometry.triangles.size() * 3;
      inputMesh.indices                 = reinterpret_cast<const uint32_t*>(geometry.triangles.data());
+     clodFeatureMetrics featureMetrics = {};
+     inputMesh.feature_metrics         = &featureMetrics;
      float attributeWeights[9] = {};
 
      if(geometry.attributesWithWeights)
@@ -625,6 +631,27 @@ namespace lodclusters {
 
 
      clodBuild(clodInfo, inputMesh, &context, clodGroupMeshoptimizer, nullptr);
+
+     processingInfo.stats.inputFeatureVertices += featureMetrics.input_feature_vertices;
+     processingInfo.stats.inputFeatureTris += featureMetrics.input_feature_tris;
+     processingInfo.stats.boundaryVertices += featureMetrics.boundary_vertices;
+     processingInfo.stats.nonManifoldVertices += featureMetrics.non_manifold_vertices;
+     processingInfo.stats.sharpEdgeVertices += featureMetrics.sharp_edge_vertices;
+     processingInfo.stats.boundaryComponents += featureMetrics.boundary_components;
+     processingInfo.stats.sharpRingComponents += featureMetrics.sharp_ring_components;
+     processingInfo.stats.circularHoleLoops += featureMetrics.circular_hole_loops;
+     processingInfo.stats.circularHoleVertices += featureMetrics.circular_hole_vertices;
+     processingInfo.stats.functionalBoundaryVertices += featureMetrics.functional_boundary_vertices;
+     processingInfo.stats.cylindricalVertices += featureMetrics.cylindrical_vertices;
+     processingInfo.stats.thinWallVertices += featureMetrics.thin_wall_vertices;
+     processingInfo.stats.protectedVertices += featureMetrics.protected_vertices;
+     processingInfo.stats.criticalVertices += featureMetrics.critical_vertices;
+     processingInfo.stats.featureImportanceSumPpm += featureMetrics.feature_importance_sum_ppm;
+     uint64_t previousMax = processingInfo.stats.featureImportanceMaxPpm.load();
+     while(previousMax < featureMetrics.feature_importance_max_ppm
+           && !processingInfo.stats.featureImportanceMaxPpm.compare_exchange_weak(previousMax, featureMetrics.feature_importance_max_ppm))
+     {
+     }
 
      geometry.triangles        = {};
      geometry.vertexPositions  = {};

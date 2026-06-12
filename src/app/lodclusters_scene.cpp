@@ -209,7 +209,6 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
     if(!m_sceneFilePathDropLast.empty() && filePath != m_sceneFilePathDropLast)
     {
 
-      m_sceneGridConfig.numCopies                 = 1;
       m_sceneGridConfig.uniqueGeometriesForCopies = false;
 
       m_cameraSpeed             = 0;

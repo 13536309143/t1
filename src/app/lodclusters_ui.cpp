@@ -701,6 +701,29 @@ void LodClusters::onUIRender()
       PE::end();
     }
 
+    if(ImGui::CollapsingHeader("Model Array", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      PE::begin("##ModelArray", ImGuiTableFlags_Resizable);
+
+      PE::InputIntClamped("Array count", (int*)&m_sceneGridConfig.numCopies, int(SceneGridConfig::minCopies),
+                          int(SceneGridConfig::maxCopies), 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                          "Creates an instance array of the imported model without rebuilding LOD data");
+
+      if(PE::treeNode("Advanced placement"))
+      {
+        PE::InputInt("Grid axes", (int*)&m_sceneGridConfig.gridBits, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Bitmask: 1 X, 2 Y, 4 Z; default arranges copies on X/Z");
+        PE::Checkbox("Unique geometry per copy", &m_sceneGridConfig.uniqueGeometriesForCopies,
+                     "Duplicates geometry references per copy; normally leave disabled for array tests");
+        PE::InputFloat("Spacing X", &m_sceneGridConfig.refShift.x, 0.1f, 0.1f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::InputFloat("Spacing Y", &m_sceneGridConfig.refShift.y, 0.1f, 0.1f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::InputFloat("Spacing Z", &m_sceneGridConfig.refShift.z, 0.1f, 0.1f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::treePop();
+      }
+
+      PE::end();
+    }
+
 
    if(m_renderScene && ImGui::CollapsingHeader("Streaming", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
    {
@@ -1445,6 +1468,10 @@ void LodClusters::onUIRender()
             rowFmt("LOD decimation", "{:.3f}", cfg.lodLevelDecimationFactor);
             rowFmt("Assembly min instances", "{}", cfg.assemblyCullingMinInstances);
             rowFmt("Assembly LOD pixels", "{:.2f}", cfg.assemblyLodPixelThreshold);
+            rowBool("Feature constraints", cfg.featureConstraints);
+            rowFmt("Feature importance weight", "{:.2f}", cfg.featureImportanceWeight);
+            rowFmt("Feature protect threshold", "{:.2f}", cfg.featureProtectThreshold);
+            rowFmt("Feature critical threshold", "{:.2f}", cfg.featureCriticalThreshold);
             rowFmt("Meshopt fill weight", "{:.3f}", cfg.meshoptFillWeight);
             rowFmt("Meshopt split factor", "{:.3f}", cfg.meshoptSplitFactor);
             rowBool("Compressed data", cfg.useCompressedData);
@@ -1522,6 +1549,34 @@ void LodClusters::onUIRender()
             rowFmt("Vertex tex bytes", "{}", formatMemorySize(size_t(ps.vertexTexCoordBytes)));
             rowFmt("Vertex normal/tangent bytes", "{}", formatMemorySize(size_t(ps.vertexNrmBytes)));
             rowFmt("Vertex compressed bytes", "{}", formatMemorySize(size_t(ps.vertexCompressedBytes)));
+            ImGui::EndTable();
+          }
+        }
+
+        if(m_scene && ImGui::CollapsingHeader("Feature Retention Output", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+          const Scene::ProcessingStatsSnapshot& ps = m_scene->m_processingStats;
+          double invVertices = 100.0 / double(std::max<uint64_t>(1, ps.inputFeatureVertices));
+          double avgImportance = double(ps.featureImportanceSumPpm) / double(std::max<uint64_t>(1, ps.inputFeatureVertices)) / 1000000.0;
+          double maxImportance = double(ps.featureImportanceMaxPpm) / 1000000.0;
+          if(beginParamTable("##FeatureRetentionOutput"))
+          {
+            rowFmt("Input feature vertices", "{}", ps.inputFeatureVertices);
+            rowFmt("Input feature tris", "{}", ps.inputFeatureTris);
+            rowFmt("Boundary vertices", "{} ({:.2f}%)", ps.boundaryVertices, double(ps.boundaryVertices) * invVertices);
+            rowFmt("Non-manifold vertices", "{} ({:.2f}%)", ps.nonManifoldVertices, double(ps.nonManifoldVertices) * invVertices);
+            rowFmt("Sharp edge vertices", "{} ({:.2f}%)", ps.sharpEdgeVertices, double(ps.sharpEdgeVertices) * invVertices);
+            rowFmt("Boundary components", "{}", ps.boundaryComponents);
+            rowFmt("Sharp ring components", "{}", ps.sharpRingComponents);
+            rowFmt("Circular hole loops", "{}", ps.circularHoleLoops);
+            rowFmt("Circular hole vertices", "{} ({:.2f}%)", ps.circularHoleVertices, double(ps.circularHoleVertices) * invVertices);
+            rowFmt("Functional boundaries", "{} ({:.2f}%)", ps.functionalBoundaryVertices, double(ps.functionalBoundaryVertices) * invVertices);
+            rowFmt("Cylindrical vertices", "{} ({:.2f}%)", ps.cylindricalVertices, double(ps.cylindricalVertices) * invVertices);
+            rowFmt("Thin-wall vertices", "{} ({:.2f}%)", ps.thinWallVertices, double(ps.thinWallVertices) * invVertices);
+            rowFmt("Protected vertices", "{} ({:.2f}%)", ps.protectedVertices, double(ps.protectedVertices) * invVertices);
+            rowFmt("Critical vertices", "{} ({:.2f}%)", ps.criticalVertices, double(ps.criticalVertices) * invVertices);
+            rowFmt("Avg feature importance", "{:.4f}", avgImportance);
+            rowFmt("Max feature importance", "{:.4f}", maxImportance);
             ImGui::EndTable();
           }
         }

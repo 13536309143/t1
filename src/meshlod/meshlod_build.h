@@ -102,6 +102,10 @@ clodConfig clodDefaultConfig(size_t max_triangles)
 	config.simplify_permissive = true;
 	config.simplify_fallback_permissive = true;
 	config.simplify_fallback_sloppy = true;
+	config.feature_constraints = true;
+	config.feature_attribute_weight = 4.0f;
+	config.feature_protect_threshold = 0.78f;
+	config.feature_critical_threshold = 0.93f;
 
 	return config;
 }
@@ -210,14 +214,15 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 		}
 	}
 
+	analyzeFeatureConstraints(context);
 
-	context.clusters = clusterize(config, mesh, mesh.indices, mesh.index_count);
+	context.clusters = clusterize(config, context.mesh, context.mesh.indices, context.mesh.index_count);
 
 	context.next_cluster = context.clusters.size();
 
 	for (Cluster& cluster : context.clusters)
 
-		cluster.bounds = boundsCompute(mesh, cluster.indices, 0.f);
+		cluster.bounds = boundsCompute(context.mesh, cluster.indices, 0.f);
 
 	context.pending.resize(context.clusters.size());
 	for (size_t i = 0; i < context.clusters.size(); ++i)

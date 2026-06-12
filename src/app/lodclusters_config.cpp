@@ -40,6 +40,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->addVector({"suncolor"}, &m_frameConfig.frameConstants.skyParams.sunColor);
   m_info.parameterRegistry->add({"streaming"}, &m_tweak.useStreaming);
   m_info.parameterRegistry->add({"gridcopies"}, &m_sceneGridConfig.numCopies);
+  m_info.parameterRegistry->add({"modelarray"}, &m_sceneGridConfig.numCopies);
+  m_info.parameterRegistry->add({"arraycopies"}, &m_sceneGridConfig.numCopies);
   m_info.parameterRegistry->add({"gridconfig"}, &m_sceneGridConfig.gridBits);
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
@@ -58,6 +60,10 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"assemblymininstances"}, &m_sceneConfig.assemblyCullingMinInstances);
   m_info.parameterRegistry->add({"assemblylodpixels"}, &m_sceneConfig.assemblyLodPixelThreshold);
   m_info.parameterRegistry->add({"meshoptfillweight"}, &m_sceneConfig.meshoptFillWeight);
+  m_info.parameterRegistry->add({"featureconstraints"}, &m_sceneConfig.featureConstraints);
+  m_info.parameterRegistry->add({"featureimportanceweight"}, &m_sceneConfig.featureImportanceWeight);
+  m_info.parameterRegistry->add({"featureprotectthreshold"}, &m_sceneConfig.featureProtectThreshold);
+  m_info.parameterRegistry->add({"featurecriticalthreshold"}, &m_sceneConfig.featureCriticalThreshold);
 
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"shadowray"}, &m_frameConfig.frameConstants.doShadow);
